@@ -47,3 +47,6 @@ mcp-client
 /_*.xlsx
 
 docs/superpowers/
+
+# Scratch folder
+scratch/
