@@ -6,6 +6,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Go Money** — self-hosted personal finance manager. Go backend (ConnectRPC) + Angular 19 / PrimeNG 19 frontend. PostgreSQL via GORM. Lua scripting for transaction rules. Grafana for reporting. Embedded MCP server exposed at `/mcp`.
 
+## Branch Workflow
+
+- `master` is upstream (taken from internet) and read-only — NEVER commit to it, push to it, or merge into it.
+- `feature/bazari` is the project's actual main branch — treat it as `main`.
+- All new branches must branch off `feature/bazari`, and all merges/PRs must target `feature/bazari`.
+
 ## Layout
 
 ```
