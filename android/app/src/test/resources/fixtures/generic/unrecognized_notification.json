@@ -1,0 +1,14 @@
+{
+  "name": "generic unrecognized → failure retained as parse_error",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "com.other.bank",
+    "title": "سایر بانک",
+    "text": "کیک تولدت مبارک",
+    "postedAt": "2026-09-23T13:05:00+03:30"
+  },
+  "expectedFailure": {
+    "reason_contains": "generic parser",
+    "confidence": "LOW"
+  }
+}

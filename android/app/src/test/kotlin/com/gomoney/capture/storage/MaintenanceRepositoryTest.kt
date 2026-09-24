@@ -1,0 +1,87 @@
+package com.gomoney.capture.storage
+
+import android.content.Context
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
+import com.gomoney.capture.model.ErrorCategory
+import kotlinx.coroutines.test.runTest
+import org.junit.After
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Before
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+
+/** MaintenanceRepository tests (T040): clear processed edge cases. */
+@RunWith(RobolectricTestRunner::class)
+class MaintenanceRepositoryTest {
+
+    private lateinit var db: AppDatabase
+    private lateinit var deliveryRepository: DeliveryRepository
+    private lateinit var maintenance: MaintenanceRepository
+
+    @Before
+    fun setUp() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        deliveryRepository = DeliveryRepository(db.deliveryRecordDao())
+        maintenance = MaintenanceRepository(
+            rawEventDao = db.rawEventDao(),
+            normalizedTransactionDao = db.normalizedTransactionDao(),
+            deliveryRecordDao = db.deliveryRecordDao(),
+        )
+    }
+
+    @After
+    fun tearDown() {
+        db.close()
+    }
+
+    private suspend fun seed(eventId: String, text: String = "text"): RawEvent {
+        val event = RawEvent(eventId, "notification", "pkg", null, null, text, "2026-09-23T20:31:22+03:30", "2026-09-23T20:31:22+03:30")
+        db.rawEventDao().insert(event)
+        db.normalizedTransactionDao().insert(
+            NormalizedTransaction(
+                id = eventId,
+                sourceEventId = eventId,
+                source = "notification",
+                bank = "mellat",
+                accountHint = "****1234",
+                type = "expense",
+                amountMinor = 500_000L,
+                currency = "IRR",
+                txAt = event.postedAt,
+                description = "desc",
+                rawTextRef = eventId,
+                fingerprint = "fp-" + eventId,
+                parserName = "MellatParser",
+                confidence = "HIGH",
+            ),
+        )
+        deliveryRepository.createQueued(eventId, eventId)
+        return event
+    }
+
+    @Test
+    fun `clear removes only sent rows preserving pending and failed`() = runTest {
+        seed("sent-1")
+        seed("pending-1")
+        seed("failed-1")
+
+        deliveryRepository.transition("sent-1", com.gomoney.capture.model.DeliveryState.SENDING)
+        deliveryRepository.transition("sent-1", com.gomoney.capture.model.DeliveryState.SENT)
+        deliveryRepository.transition("failed-1", com.gomoney.capture.model.DeliveryState.SENDING)
+        deliveryRepository.transition("failed-1", com.gomoney.capture.model.DeliveryState.FAILED, ErrorCategory.NETWORK_ERROR)
+
+        val removed = maintenance.clearProcessed()
+        assertEquals(1, removed)
+
+        val remaining = db.deliveryRecordDao().pendingForDelivery()
+        assertEquals(2, remaining.size)
+        assertTrue(remaining.any { it.id == "pending-1" })
+        assertTrue(remaining.any { it.id == "failed-1" })
+    }
+}

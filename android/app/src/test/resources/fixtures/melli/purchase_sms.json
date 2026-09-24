@@ -1,0 +1,17 @@
+{
+  "name": "melli purchase (sms, same transaction)",
+  "raw": {
+    "source": "sms",
+    "sourcePackage": "BMI",
+    "title": null,
+    "text": "خرید شماره کارت 6037.****9876 مبلغ ۱٬۲۰۰٬۰۰۰ ریال فروشگاه رفاه",
+    "postedAt": "2026-09-23T17:21:30+03:30"
+  },
+  "expected": {
+    "bank": "melli",
+    "accountHint": "****9876",
+    "type": "expense",
+    "amountMinor": 1200000,
+    "currency": "IRR"
+  }
+}

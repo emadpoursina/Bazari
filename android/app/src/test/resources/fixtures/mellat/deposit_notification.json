@@ -1,0 +1,17 @@
+{
+  "name": "mellat deposit",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "ir.mellat.mellatab",
+    "title": "بانک ملت",
+    "text": "واریز وجه به مبلغ ۱٬۰۰۰٬۰۰۰ ریال به حساب ****1234",
+    "postedAt": "2026-09-23T18:00:00+03:30"
+  },
+  "expected": {
+    "bank": "mellat",
+    "accountHint": "****1234",
+    "type": "income",
+    "amountMinor": 1000000,
+    "currency": "IRR"
+  }
+}

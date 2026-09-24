@@ -1,0 +1,17 @@
+{
+  "name": "melli transfer (notification)",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "ir.bmi.mobilebank",
+    "title": "بانک ملی",
+    "text": "انتقال وجه مبلغ ۲۵۰٬۰۰۰ ریال از حساب ****9876 به ****4321",
+    "postedAt": "2026-09-23T16:45:00+03:30"
+  },
+  "expected": {
+    "bank": "melli",
+    "accountHint": "****9876",
+    "type": "expense",
+    "amountMinor": 250000,
+    "currency": "IRR"
+  }
+}

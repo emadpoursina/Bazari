@@ -1,0 +1,17 @@
+{
+  "name": "mellat purchase (sms, same transaction)",
+  "raw": {
+    "source": "sms",
+    "sourcePackage": "MELLAT",
+    "title": null,
+    "text": "خريد شماره کارت 6104.****1234 به مبلغ ۵۰۰٬۰۰۰ ریال فروشگاه قطبی",
+    "postedAt": "2026-09-23T20:32:10+03:30"
+  },
+  "expected": {
+    "bank": "mellat",
+    "accountHint": "****1234",
+    "type": "expense",
+    "amountMinor": 500000,
+    "currency": "IRR"
+  }
+}

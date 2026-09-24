@@ -1,0 +1,17 @@
+{
+  "name": "generic purchase (notification, conservative high-confidence)",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "com.other.bank",
+    "title": "سایر بانک",
+    "text": "خرید مبلغ ۹۹۰٬۰۰۰ ریال کارت ****4444 فروشگاه",
+    "postedAt": "2026-09-23T13:00:00+03:30"
+  },
+  "expected": {
+    "bank": "generic",
+    "accountHint": "****4444",
+    "type": "expense",
+    "amountMinor": 990000,
+    "currency": "IRR"
+  }
+}

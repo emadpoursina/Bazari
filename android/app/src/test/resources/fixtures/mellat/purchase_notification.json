@@ -1,0 +1,18 @@
+{
+  "name": "mellat purchase (notification)",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "ir.mellat.mellatab",
+    "title": "بانک ملت",
+    "text": "خريد شماره کارت 6104.****1234 به مبلغ ۵۰۰٬۰۰۰ ریال فروشگاه قطبی",
+    "postedAt": "2026-09-23T20:31:22+03:30"
+  },
+  "expected": {
+    "bank": "mellat",
+    "accountHint": "****1234",
+    "type": "expense",
+    "amountMinor": 500000,
+    "currency": "IRR",
+    "description_contains": "خريد شماره کارت"
+  }
+}

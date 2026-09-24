@@ -1,0 +1,17 @@
+{
+  "name": "mellat withdrawal",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "ir.mellat.mellatab",
+    "title": "بانک ملت",
+    "text": "برداشت وجه به مبلغ ۲٬۰۰۰٬۰۰۰ ریال از حساب ****1234 عابربانک",
+    "postedAt": "2026-09-23T19:05:00+03:30"
+  },
+  "expected": {
+    "bank": "mellat",
+    "accountHint": "****1234",
+    "type": "expense",
+    "amountMinor": 2000000,
+    "currency": "IRR"
+  }
+}

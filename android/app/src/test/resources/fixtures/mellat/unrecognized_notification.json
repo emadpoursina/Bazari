@@ -1,0 +1,14 @@
+{
+  "name": "mellat unrecognized → failure retained as parse_error",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "ir.mellat.mellatab",
+    "title": "بانک ملت",
+    "text": "سلام، دعوت به همکاری پاداش ویژه",
+    "postedAt": "2026-09-23T12:00:00+03:30"
+  },
+  "expectedFailure": {
+    "reason_contains": "unrecognized mellat message type",
+    "confidence": "MEDIUM"
+  }
+}

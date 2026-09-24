@@ -31,6 +31,18 @@ update-pb:
 test:
 	AUTO_CREATE_CI_DB=true go test ./...
 
+.PHONY: android-bridge-test
+android-bridge-test:
+	go test ./pkg/androidbridge/...
+
+.PHONY: android-bridge-run
+android-bridge-run:
+	go run ./cmd/android-bridge $(ARGS)
+
+.PHONY: android-gradle-test
+android-gradle-test:
+	cd android && (test -f gradlew && ./gradlew test || echo "run 'gradle wrapper && ./gradlew test' in android/ first")
+
 .PHONY: build-docker
 build-docker:
 	docker build -f ./build/Dockerfile.server --build-arg="SOURCE_PATH=cmd/server" --build-arg="VERSION=${VERSION}" --build-arg="COMMIT_SHA=${COMMIT_SHA}" -t ${DOCKER_SERVER_IMAGE_NAME} .

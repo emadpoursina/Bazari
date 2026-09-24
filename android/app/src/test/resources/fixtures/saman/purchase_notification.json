@@ -1,0 +1,17 @@
+{
+  "name": "saman purchase (notification)",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "ir.sb24.saman",
+    "title": "بانک سامان",
+    "text": "خرید مبلغ ۳۵۰٬۰۰۰ ریال کارت ****5555 فروشگاه دیجی",
+    "postedAt": "2026-09-23T15:10:00+03:30"
+  },
+  "expected": {
+    "bank": "saman",
+    "accountHint": "****5555",
+    "type": "expense",
+    "amountMinor": 350000,
+    "currency": "IRR"
+  }
+}
