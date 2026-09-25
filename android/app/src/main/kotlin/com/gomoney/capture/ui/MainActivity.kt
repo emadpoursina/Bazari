@@ -1,5 +1,8 @@
 package com.gomoney.capture.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,6 +17,7 @@ import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,6 +26,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import com.gomoney.capture.capture.PlatformCapturePermission
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.SettingsRepository
@@ -36,6 +41,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        requestSyncNotifications()
 
         val db = AppDatabase.get(applicationContext)
         val settings = SettingsRepository(applicationContext)
@@ -70,6 +76,12 @@ private fun AppTabs(
     val eventActions = remember { EventActions(context, db) }
     val settingsConnectionStatus by settingsViewModel.connectionStatus.collectAsStateWithLifecycleCompat()
 
+    // Fresh connection status every time the dashboard is opened, so the
+    // halt reason is never stale when the user returns home.
+    LaunchedEffect(selectedTab) {
+        if (selectedTab == 0) dashboardViewModel.refreshConnection()
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize().safeDrawingPadding(),
         bottomBar = {
@@ -85,6 +97,7 @@ private fun AppTabs(
                 0 -> DashboardScreen(
                     state = dashboardState,
                     onRefreshConnection = { dashboardViewModel.refreshConnection() },
+                    onSyncNow = { dashboardViewModel.syncNow(context) },
                 )
                 1 -> EventsScreen(
                     state = eventsState,
@@ -109,3 +122,13 @@ private fun AppTabs(
 @Composable
 private fun <T> kotlinx.coroutines.flow.StateFlow<T>.collectAsStateWithLifecycleCompat() =
     collectAsState()
+
+private fun ComponentActivity.requestSyncNotifications() {
+    if (Build.VERSION.SDK_INT < 33) return
+    if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) ==
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        return
+    }
+    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1001)
+}

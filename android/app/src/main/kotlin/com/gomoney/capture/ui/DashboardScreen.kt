@@ -11,12 +11,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.gomoney.capture.sync.SyncBanner
 import com.gomoney.capture.ui.DashboardViewModel.DashboardState
 
 /**
@@ -27,12 +24,24 @@ import com.gomoney.capture.ui.DashboardViewModel.DashboardState
 fun DashboardScreen(
     state: DashboardState,
     onRefreshConnection: () -> Unit,
+    onSyncNow: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Text(text = "Go Money Capture", style = MaterialTheme.typography.titleLarge)
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(text = state.bannerMessage, style = MaterialTheme.typography.bodyMedium)
+                if (state.banner.kind != SyncBanner.Kind.ALL_CLEAR) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onSyncNow) { Text("Sync now") }
+                    }
+                }
+            }
+        }
 
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CountCard("Captured today", state.capturedToday, Modifier.weight(1f))

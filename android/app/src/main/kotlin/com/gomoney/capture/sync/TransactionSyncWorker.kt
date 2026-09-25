@@ -39,10 +39,19 @@ class TransactionSyncWorker(
         val config = settings.current()
         if (config.serverUrl.isBlank()) return Result.success()
 
-        val deliveryRepository = DeliveryRepository(db.deliveryRecordDao())
+        val dao = db.deliveryRecordDao()
+        val pendingBefore = dao.pendingForDelivery().size
+        val deliveryRepository = DeliveryRepository(dao)
         val dedupRepository = DedupRepository(db.dedupCacheDao())
 
         SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        val pendingAfter = dao.pendingForDelivery()
+        val banner = SyncBanner.forPending(pendingAfter)
+        val sentDelta = (pendingBefore - pendingAfter.size).coerceAtLeast(0)
+        runCatching {
+            SyncNotifier.maybeNotify(applicationContext, pendingBefore, banner, sentDelta)
+        }
         return Result.success()
     }
 }
@@ -64,7 +73,17 @@ object SyncEngine {
         val dao = db.deliveryRecordDao()
         val txDao = db.normalizedTransactionDao()
 
-        var pending = dao.pendingForDelivery()
+        // Auto-retry (FR-012): FAILED rows with retryable transient errors
+        // (network/server, except unauthorized) are requeued to QUEUED so the
+        // periodic worker drains them when the bridge is reachable again.
+        // Validation/parse/unauthorized failures stay FAILED for manual fix.
+        for (record in dao.pendingForDelivery()) {
+            if (isAutoRetryable(record)) {
+                deliveryRepository.requeue(record.id)
+            }
+        }
+
+        var pending = dao.pendingForDelivery().filter { it.state == "queued" }
         while (pending.isNotEmpty()) {
             val batch = pending.take(BridgeClient.BULK_MAX_ITEMS)
             val useBulk = pending.size >= BridgeClient.BULK_MIN_ITEMS
@@ -93,7 +112,7 @@ object SyncEngine {
                 applyResult(bridge.send(config, tx), tx.id, tx.fingerprint, deliveryRepository, dedupRepository)
             }
 
-            val next = dao.pendingForDelivery()
+            val next = dao.pendingForDelivery().filter { it.state == "queued" }
             if (next.size == pending.size && next == pending) {
                 // No progress (all failures) — stop; the next WorkManager run
                 // retries with exponential backoff (FR-011).
@@ -101,6 +120,21 @@ object SyncEngine {
             }
             pending = next
         }
+    }
+
+    /**
+     * Retryable without user action: transient network/server failures.
+     * Validation/parse failures and unauthorized (wrong token) need a manual
+     * fix, so they stay FAILED instead of looping forever.
+     */
+    fun isAutoRetryable(record: com.gomoney.capture.storage.DeliveryRecord): Boolean {
+        if (record.state != "failed") return false
+        val category = record.errorCategory ?: return false
+        if (category == ErrorCategory.NETWORK_ERROR.name.lowercase()) return true
+        if (category == ErrorCategory.SERVER_ERROR.name.lowercase()) {
+            return !(record.errorDetail ?: "").contains("unauthorized", ignoreCase = true)
+        }
+        return false
     }
 
     private suspend fun applyResult(

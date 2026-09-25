@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.gomoney.capture.model.DeliveryState
+import com.gomoney.capture.model.ErrorCategory
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.DedupRepository
 import com.gomoney.capture.storage.DeliveryRepository
@@ -167,5 +168,43 @@ class TransactionSyncWorkerTest {
 
         assertEquals("sent", db.deliveryRecordDao().byId("bulk-0")?.state)
         assertEquals("sent", db.deliveryRecordDao().byId("bulk-1")?.state)
+    }
+
+    /** Away-from-home outage auto-recovers: FAILED network_error drains when home. */
+    @Test
+    fun `failed network_error auto-retries on next drain`() = runTest {
+        seedQueued("retry-1", "a".repeat(63) + "1")
+        deliveryRepository.transition("retry-1", DeliveryState.SENDING)
+        deliveryRepository.transition(
+            "retry-1",
+            DeliveryState.FAILED,
+            ErrorCategory.NETWORK_ERROR,
+            "network unreachable",
+        )
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"status":"created","gomoneyTxnId":9}"""))
+
+        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        assertEquals("sent", db.deliveryRecordDao().byId("retry-1")?.state)
+        assertEquals(1, server.requestCount)
+    }
+
+    /** Validation failures need manual fix — never auto-retried. */
+    @Test
+    fun `failed validation_error stays failed without network call`() = runTest {
+        seedQueued("noretry-1", "a".repeat(63) + "2")
+        deliveryRepository.transition("noretry-1", DeliveryState.SENDING)
+        deliveryRepository.transition(
+            "noretry-1",
+            DeliveryState.FAILED,
+            ErrorCategory.VALIDATION_ERROR,
+            "validation unmapped account",
+        )
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"status":"created"}"""))
+
+        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        assertEquals("failed", db.deliveryRecordDao().byId("noretry-1")?.state)
+        assertEquals(0, server.requestCount)
     }
 }

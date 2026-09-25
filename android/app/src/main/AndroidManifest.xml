@@ -6,6 +6,7 @@
     <!-- Notification access is granted via NotificationListenerService (no permission marker). -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!--
       Bridge contract (specs/001-android-txn-capture/contracts/bridge-http-api.md,

@@ -1,30 +1,16 @@
 package com.gomoney.capture.ui
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.gomoney.capture.capture.PlatformCapturePermission
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.ServerConfiguration
 import com.gomoney.capture.storage.SettingsRepository
+import com.gomoney.capture.sync.SyncBanner
+import com.gomoney.capture.sync.SyncEngine
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -46,6 +32,8 @@ class DashboardViewModel(
         val failed: Long = 0,
         val connection: ConnectionStatus = ConnectionStatus.UNKNOWN,
         val config: ServerConfiguration = ServerConfiguration(),
+        val banner: SyncBanner.Banner = SyncBanner.Banner(SyncBanner.Kind.ALL_CLEAR),
+        val bannerMessage: String = SyncBanner.message(SyncBanner.Banner(SyncBanner.Kind.ALL_CLEAR)),
     )
 
     enum class ConnectionStatus { CONNECTED, GO_MONEY_DOWN, DISCONNECTED, UNKNOWN }
@@ -59,6 +47,7 @@ class DashboardViewModel(
             settings.observe(),
             connection,
         ) { txs, pendingRows, config, connection ->
+            val banner = SyncBanner.forPending(pendingRows)
             DashboardState(
                 capturedToday = txs.count { it.txAt.startsWith(today()) }.toLong(),
                 pending = pendingRows.size.toLong(),
@@ -68,6 +57,8 @@ class DashboardViewModel(
                 failed = pendingRows.count { it.state == "failed" }.toLong(),
                 connection = connection,
                 config = config,
+                banner = banner,
+                bannerMessage = SyncBanner.message(banner),
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardState())
 
@@ -91,6 +82,12 @@ class DashboardViewModel(
                 else -> ConnectionStatus.GO_MONEY_DOWN
             }
         }
+    }
+
+    /** One-tap manual drain for "I'm home, sync now" (FR-022). */
+    fun syncNow(context: android.content.Context) {
+        SyncEngine.enqueueExpedited(context)
+        refreshConnection()
     }
 
     private fun today(): String = java.time.LocalDate.now().toString()
