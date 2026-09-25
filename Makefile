@@ -1,6 +1,7 @@
 AWS_DEFAULT_REGION ?= eu-north-1
 AWS_EXCHANGE_RATES_BUCKET ?= go-money-exchange-rates
 DOCKER_SERVER_IMAGE_NAME ?= "go-money-server:latest"
+BRIDGE_ENV_FILE ?= ./.env.android-bridge
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 COMMIT_SHA ?= $(shell git rev-parse --short HEAD)
@@ -37,7 +38,13 @@ android-bridge-test:
 
 .PHONY: android-bridge-run
 android-bridge-run:
-	go run ./cmd/android-bridge $(ARGS)
+	@test -f "$(BRIDGE_ENV_FILE)" || { \
+		echo "Missing bridge env file: $(BRIDGE_ENV_FILE)" >&2; \
+		echo "Copy .env.android-bridge.example and fill in the values." >&2; \
+		exit 1; \
+	}
+	@set -a; . "$(BRIDGE_ENV_FILE)" || exit 1; set +a; \
+		go run ./cmd/android-bridge $(ARGS)
 
 .PHONY: android-gradle-test
 android-gradle-test:

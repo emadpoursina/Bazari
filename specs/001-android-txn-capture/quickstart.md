@@ -14,8 +14,8 @@ Run these scenarios after implementation to prove the MVP acceptance criteria (s
 ## Build & Run
 
 ```bash
-# Bridge (from repo root)
-go run ./cmd/android-bridge --listen :8787 --gomoney-url http://localhost:8080 --gomoney-token <service-token>
+# Bridge (from repo root; see bridge-runbook.md for the env file setup)
+make android-bridge-run
 
 # Android app
 cd android && ./gradlew installDebug

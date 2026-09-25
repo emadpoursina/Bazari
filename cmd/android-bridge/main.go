@@ -30,14 +30,30 @@ type Config struct {
 
 func parseConfig() Config {
 	cfg := Config{}
+	gomoneyTokenFlagSet := false
+	bearerTokenFlagSet := false
 
 	flag.StringVar(&cfg.Listen, "listen", envOr("BRIDGE_LISTEN", ":8787"), "HTTP listen address")
 	flag.StringVar(&cfg.GomoneyURL, "gomoney-url", envOr("GOMONEY_URL", "http://127.0.0.1:8080"), "Go Money server base URL")
-	flag.StringVar(&cfg.GomoneyToken, "gomoney-token", envOr("GOMONEY_SERVICE_TOKEN", ""), "Go Money service token")
-	flag.StringVar(&cfg.BearerToken, "bearer-token", envOr("BRIDGE_TOKEN", ""), "bridge bearer token (Android → bridge auth)")
+	flag.StringVar(&cfg.GomoneyToken, "gomoney-token", "", "Go Money service token")
+	flag.StringVar(&cfg.BearerToken, "bearer-token", "", "bridge bearer token (Android → bridge auth)")
 	flag.StringVar(&cfg.DedupDBPath, "dedup-db", envOr("BRIDGE_DEDUP_DB", "dedup.db"), "dedup SQLite database path")
 	flag.StringVar(&cfg.MappingsPath, "mappings-file", envOr("BRIDGE_MAPPINGS", "mappings.json"), "account-hint mappings JSON file")
 	flag.Parse()
+	flag.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "gomoney-token":
+			gomoneyTokenFlagSet = true
+		case "bearer-token":
+			bearerTokenFlagSet = true
+		}
+	})
+	if !gomoneyTokenFlagSet {
+		cfg.GomoneyToken = envOr("GOMONEY_SERVICE_TOKEN", "")
+	}
+	if !bearerTokenFlagSet {
+		cfg.BearerToken = envOr("BRIDGE_TOKEN", "")
+	}
 	return cfg
 }
 

@@ -17,18 +17,23 @@ curl -X POST https://<gomoney-host>/gomoneypb.configuration.v1.ConfigurationServ
 
 ## 2. Run the bridge
 
+Copy the example config, add the service and app bearer tokens, and restrict
+the local file permissions:
+
 ```bash
-go run ./cmd/android-bridge \
-  --listen :8787 \
-  --gomoney-url http://127.0.0.1:8080 \
-  --gomoney-token <GOMONEY_SERVICE_TOKEN> \
-  --bearer-token <RANDOM_STATIC_TOKEN_FOR_THE_APP> \
-  --dedup-db ~/.gomoney-android-bridge/dedup.db \
-  --mappings-file ~/.gomoney-android-bridge/mappings.json
+cp .env.android-bridge.example .env.android-bridge
+${EDITOR:-vi} .env.android-bridge
+chmod 600 .env.android-bridge
+make android-bridge-run
 ```
 
-Equivalent env vars: `BRIDGE_LISTEN`, `GOMONEY_URL`, `GOMONEY_SERVICE_TOKEN`,
-`BRIDGE_TOKEN`, `BRIDGE_DEDUP_DB`, `BRIDGE_MAPPINGS`.
+The Make target reads `BRIDGE_LISTEN`, `GOMONEY_URL`,
+`GOMONEY_SERVICE_TOKEN`, `BRIDGE_TOKEN`, `BRIDGE_DEDUP_DB`, and
+`BRIDGE_MAPPINGS` from `.env.android-bridge` before starting the bridge. The
+file uses shell-style `NAME=value` entries as shown in the template, and the
+local file is git-ignored. To use a different file, pass
+`BRIDGE_ENV_FILE=/path/to/file` to make. Keep tokens in the file rather than
+command-line flags, which may be visible in shell history or process listings.
 
 Generate a token for the app: `openssl rand -hex 32`.
 
