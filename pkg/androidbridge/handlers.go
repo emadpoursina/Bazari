@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	transactionsv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/transactions/v1"
 	gomoneypbv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/v1"
@@ -84,6 +86,195 @@ func (s *Server) handleBulk(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, res)
 	s.log.Request("POST /v1/transactions/bulk", "", fmt.Sprintf("items=%d", len(res.Results)), s.now().Sub(start))
+}
+
+// handleUpdateMemo updates only the title of a recorded transaction. It
+// reuses the current Go Money financial fields and a stable base title, so
+// this cannot change its amount, accounts, date, or tags.
+func (s *Server) handleUpdateMemo(w http.ResponseWriter, r *http.Request) {
+	start := s.now()
+
+	var req MemoUpdateRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if details := validateMemoUpdate(&req); len(details) > 0 {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: WireValidationError, Details: details})
+		return
+	}
+
+	// Serialize against create/dedup writes and other title updates.
+	s.dedup.DeliverLock().Lock()
+	defer s.dedup.DeliverLock().Unlock()
+
+	entry, err := s.lookupMemoEntry(r, &req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: WireGoMoneyError, Details: []string{"memo lookup failed"}})
+		return
+	}
+	if entry == nil || entry.GomoneyTxnId == "" {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: WireValidationError, Details: []string{"recorded transaction not found"}})
+		return
+	}
+
+	gomoneyTxnID, err := strconv.ParseInt(entry.GomoneyTxnId, 10, 64)
+	if err != nil || gomoneyTxnID <= 0 {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: WireGoMoneyError, Details: []string{"invalid Go Money transaction id"}})
+		return
+	}
+
+	existing, err := s.client.GetTransactionByID(r.Context(), gomoneyTxnID)
+	if err != nil {
+		status, body := classifyGoMoneyError(err)
+		writeJSON(w, status, body)
+		s.log.Request("PUT /v1/transactions/memo", req.Fingerprint, fmt.Sprintf("http=%d", status), s.now().Sub(start))
+		return
+	}
+	baseRequest, err := createRequestFromExisting(existing)
+	if err != nil {
+		status, body := classifyGoMoneyError(err)
+		writeJSON(w, status, body)
+		return
+	}
+	baseTitle := entry.MemoBaseTitle
+	currentTitle := existing.GetTitle()
+	saveBaseTitle := false
+	if baseTitle == "" {
+		baseTitle = currentTitle
+		saveBaseTitle = true
+	} else if currentTitle != baseTitle && !strings.HasPrefix(currentTitle, baseTitle+" — ") {
+		// Respect a title manually edited in Go Money since capture.
+		baseTitle = currentTitle
+		saveBaseTitle = true
+	}
+	if saveBaseTitle {
+		if err = s.dedup.SaveMemoBaseTitle(r.Context(), entry.Fingerprint, baseTitle); err != nil {
+			writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: WireGoMoneyError, Details: []string{"memo metadata save failed"}})
+			return
+		}
+	}
+
+	baseRequest.Title = titleWithMemo(baseTitle, req.Memo)
+	_, err = s.client.UpdateTransaction(r.Context(), &transactionsv1.UpdateTransactionRequest{
+		Id:          gomoneyTxnID,
+		Transaction: baseRequest,
+	})
+	if err != nil {
+		status, body := classifyGoMoneyError(err)
+		writeJSON(w, status, body)
+		s.log.Request("PUT /v1/transactions/memo", req.Fingerprint, fmt.Sprintf("http=%d", status), s.now().Sub(start))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, MemoUpdateResponse{Status: "updated", GomoneyTxnId: entry.GomoneyTxnId})
+	s.log.Request("PUT /v1/transactions/memo", req.Fingerprint, "updated", s.now().Sub(start))
+}
+
+func validateMemoUpdate(req *MemoUpdateRequest) []string {
+	var details []string
+	if len(req.Fingerprint) != 64 {
+		details = append(details, "fingerprint must be 64 hexadecimal characters")
+	} else if _, err := hex.DecodeString(req.Fingerprint); err != nil {
+		details = append(details, "fingerprint must be 64 hexadecimal characters")
+	}
+	if utf8.RuneCountInString(req.Memo) > 200 {
+		details = append(details, "memo must be 200 characters or fewer")
+	}
+	return details
+}
+
+func (s *Server) lookupMemoEntry(r *http.Request, req *MemoUpdateRequest) (*DedupEntry, error) {
+	if req.GomoneyTxnId != "" {
+		entry, err := s.dedup.LookupGoMoneyTxnID(r.Context(), req.GomoneyTxnId)
+		if err != nil {
+			return entry, err
+		}
+		if entry != nil && (entry.Fingerprint == req.Fingerprint || memoIdentityMatches(entry, req)) {
+			return entry, nil
+		}
+	}
+	if entry, err := s.dedup.LookupExact(r.Context(), req.Fingerprint); err != nil || entry != nil {
+		return entry, err
+	}
+	txAt, err := time.Parse(time.RFC3339, req.TxAt)
+	if err != nil || req.Bank == "" || req.AccountHint == "" || req.Amount <= 0 {
+		return nil, nil
+	}
+	return s.dedup.LookupBucketWindow(
+		r.Context(),
+		req.Bank,
+		req.AccountHint,
+		req.Type,
+		normalizeDesc(req.Description),
+		req.Amount,
+		txAt.Unix(),
+	)
+}
+
+func memoIdentityMatches(entry *DedupEntry, req *MemoUpdateRequest) bool {
+	txAt, err := time.Parse(time.RFC3339, req.TxAt)
+	if err != nil {
+		return false
+	}
+	return entry.Bank == req.Bank &&
+		entry.AccountHint == req.AccountHint &&
+		entry.Type == req.Type &&
+		entry.Amount == req.Amount &&
+		entry.Desc == normalizeDesc(req.Description) &&
+		abs64(entry.TxUnix-txAt.Unix()) <= 120
+}
+
+func createRequestFromExisting(txn *gomoneypbv1.Transaction) (*transactionsv1.CreateTransactionRequest, error) {
+	if txn == nil || txn.GetTransactionDate() == nil {
+		return nil, errors.New("Go Money transaction is missing its date")
+	}
+	request := &transactionsv1.CreateTransactionRequest{
+		Title:                    txn.GetTitle(),
+		Notes:                    txn.GetNotes(),
+		Extra:                    txn.GetExtra(),
+		TagIds:                   txn.GetTagIds(),
+		TransactionDate:          txn.GetTransactionDate(),
+		ReferenceNumber:          txn.ReferenceNumber,
+		InternalReferenceNumbers: txn.GetInternalReferenceNumbers(),
+		CategoryId:               txn.CategoryId,
+		GroupKey:                 txn.GroupKey,
+		SkipRules:                true,
+	}
+	switch txn.GetType() {
+	case gomoneypbv1.TransactionType_TRANSACTION_TYPE_EXPENSE:
+		expense := &transactionsv1.Expense{
+			SourceAmount:         txn.GetSourceAmount(),
+			SourceCurrency:       txn.GetSourceCurrency(),
+			SourceAccountId:      txn.GetSourceAccountId(),
+			FxSourceAmount:       txn.FxSourceAmount,
+			FxSourceCurrency:     txn.FxSourceCurrency,
+			DestinationAccountId: txn.GetDestinationAccountId(),
+			DestinationAmount:    txn.GetDestinationAmount(),
+			DestinationCurrency:  txn.GetDestinationCurrency(),
+		}
+		request.Transaction = &transactionsv1.CreateTransactionRequest_Expense{Expense: expense}
+	case gomoneypbv1.TransactionType_TRANSACTION_TYPE_INCOME:
+		income := &transactionsv1.Income{
+			SourceAccountId:      txn.GetSourceAccountId(),
+			DestinationAccountId: txn.GetDestinationAccountId(),
+			SourceAmount:         txn.GetSourceAmount(),
+			DestinationAmount:    txn.GetDestinationAmount(),
+			SourceCurrency:       txn.GetSourceCurrency(),
+			DestinationCurrency:  txn.GetDestinationCurrency(),
+		}
+		request.Transaction = &transactionsv1.CreateTransactionRequest_Income{Income: income}
+	default:
+		return nil, errors.New("Go Money transaction type is not supported for memo updates")
+	}
+	return request, nil
+}
+
+func titleWithMemo(baseTitle, memo string) string {
+	memo = strings.Join(strings.Fields(strings.TrimSpace(memo)), " ")
+	if memo == "" {
+		return baseTitle
+	}
+	return baseTitle + " — " + memo
 }
 
 // deliver is the single delivery path (contracts/bridge-http-api.md):
@@ -195,26 +386,29 @@ func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, 
 		s.log.Operation("gomoney.currencies.list", txn.Fingerprint, "converted", currencyLookupLatency)
 	}
 
-	// Reserve the fingerprint row before calling Go Money so a concurrent
-	// identical delivery hits the registry instead of double-creating.
-	if err = s.dedup.Reserve(ctx, &DedupEntry{
-		Fingerprint: txn.Fingerprint,
-		BucketKey:   BucketKey(txn.Bank, txn.AccountHint, txn.Type, txn.Amount, txAt),
-		Bank:        txn.Bank,
-		AccountHint: txn.AccountHint,
-		Type:        txn.Type,
-		Amount:      txn.Amount,
-		Desc:        normalizeDesc(txn.Description),
-		TxUnix:      txAt.Unix(),
-		RecordedAt:  s.now().Format(time.RFC3339),
-	}); err != nil {
-		return http.StatusInternalServerError, ErrorResponse{Error: WireGoMoneyError, Details: []string{"dedup reserve failed"}}
-	}
-
 	req, err := s.buildCreateRequest(txn, mappedAccount, defaultAccount, counterpartAmount)
 	if err != nil {
-		_ = s.dedup.Delete(ctx, txn.Fingerprint)
 		return http.StatusBadRequest, ErrorResponse{Error: WireValidationError, Details: []string{err.Error()}}
+	}
+	baseTitle := req.Title
+	req.Title = titleWithMemo(req.Title, txn.Memo)
+
+	// Reserve the fingerprint row before calling Go Money so a concurrent
+	// identical delivery hits the registry instead of double-creating. Store
+	// the stable title before appending the user memo for later edit/clear.
+	if err = s.dedup.Reserve(ctx, &DedupEntry{
+		Fingerprint:   txn.Fingerprint,
+		BucketKey:     BucketKey(txn.Bank, txn.AccountHint, txn.Type, txn.Amount, txAt),
+		Bank:          txn.Bank,
+		AccountHint:   txn.AccountHint,
+		Type:          txn.Type,
+		Amount:        txn.Amount,
+		Desc:          normalizeDesc(txn.Description),
+		TxUnix:        txAt.Unix(),
+		RecordedAt:    s.now().Format(time.RFC3339),
+		MemoBaseTitle: baseTitle,
+	}); err != nil {
+		return http.StatusInternalServerError, ErrorResponse{Error: WireGoMoneyError, Details: []string{"dedup reserve failed"}}
 	}
 
 	startCreate := s.now()
@@ -449,6 +643,9 @@ func validateTransaction(txn *NormalizedTransaction) []string {
 	}
 	if txn.AccountHint == "" {
 		details = append(details, "accountHint is required")
+	}
+	if utf8.RuneCountInString(txn.Memo) > 200 {
+		details = append(details, "memo must be 200 characters or fewer")
 	}
 	if _, err := txn.TxAtTime(); err != nil {
 		details = append(details, "txAt is not a valid ISO-8601 timestamp")

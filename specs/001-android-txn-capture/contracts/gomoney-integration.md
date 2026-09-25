@@ -16,7 +16,7 @@ The bridge uses a Go Money **service token** (not user credentials — FR-006 fo
 ```json
 {
   "transaction": {
-    "title": "<description> [<bank>/<accountHint>]",
+    "title": "<description> [<bank>/<accountHint>] — <memo>",
     "transaction_type": "TRANSACTION_TYPE_EXPENSE" | "TRANSACTION_TYPE_INCOME",
     "source_account_id": <resolved>,          // expense: bank account; income: default income account
     "source_amount": "-<amount in source account currency>",
@@ -31,6 +31,8 @@ The bridge uses a Go Money **service token** (not user credentials — FR-006 fo
 ```
 
 Type mapping: `expense → TRANSACTION_TYPE_EXPENSE`, `income → TRANSACTION_TYPE_INCOME`.
+
+The ` — <memo>` suffix is present only for a non-empty user-authored memo. The bridge keeps the stable title before the suffix in its dedup registry. A later memo edit reads the current Go Money transaction and calls `TransactionsService/UpdateTransaction` with the same financial fields and updated title; it never creates a second transaction or recalculates the accounting legs.
 
 Amounts follow Go Money's double-entry sign convention: source is negative and
 destination is positive. The bridge lists accounts through
@@ -72,6 +74,8 @@ Before calling CreateTransaction, the bridge consults its SQLite registry (data-
 
 `CreateTransaction` is synchronous: when Go Money responds success, the transaction exists. The bridge's 201/200 responses therefore always mean "recorded in Go Money". If Go Money succeeds but the HTTP reply to the app is lost, the app retries, hits the fingerprint registry, and receives `duplicate` → `SENT` — either way exactly one Go Money transaction (FR-030).
 
+`UpdateTransaction` is also synchronous for memo changes. Its request is assembled from the existing Go Money transaction so amount, currencies, accounts, date, tags, and other financial fields remain unchanged.
+
 ## Replaceability (FR-013)
 
 The Go Money client is an interface:
@@ -79,6 +83,8 @@ The Go Money client is an interface:
 ```go
 type GoMoneyClient interface {
     CreateTransaction(ctx context.Context, in *transaction.Request) (*gomoneypb.transactions.v1.CreateTransactionResponse, error)
+    GetTransactionByID(ctx context.Context, id int64) (*gomoneypb.v1.Transaction, error)
+    UpdateTransaction(ctx context.Context, in *transactionsv1.UpdateTransactionRequest) (*transactionsv1.UpdateTransactionResponse, error)
 }
 ```
 

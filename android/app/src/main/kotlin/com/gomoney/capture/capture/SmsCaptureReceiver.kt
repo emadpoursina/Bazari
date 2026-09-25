@@ -9,6 +9,7 @@ import com.gomoney.capture.storage.DedupRepository
 import com.gomoney.capture.storage.DeliveryRepository
 import com.gomoney.capture.storage.RawEvent
 import com.gomoney.capture.storage.SettingsRepository
+import com.gomoney.capture.sync.MemoPromptNotifier
 import java.time.OffsetDateTime
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
@@ -34,7 +35,10 @@ class SmsCaptureReceiver : BroadcastReceiver() {
             settings = settings,
             deliveryRepository = DeliveryRepository(db.deliveryRecordDao()),
             dedupRepository = DedupRepository(db.dedupCacheDao()),
-            onCaptured = { TransactionSyncHelper.enqueueExpedited(context) },
+            onCaptured = { tx ->
+                TransactionSyncHelper.enqueueExpedited(context)
+                MemoPromptNotifier.show(context, tx)
+            },
         )
         val gate = CaptureGate(PlatformCapturePermission(context))
 

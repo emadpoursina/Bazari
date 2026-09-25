@@ -105,21 +105,23 @@ object SyncEngine {
                 if (useBulk) {
                     // Drain optimization for many queued items: the whole
                     // batch is sent once; per-item results mapped below.
-                    sendBulkMapped(bridge, config, batch, deliveryRepository, dedupRepository, txDao)
+                    sendBulkMapped(bridge, config, batch, dao, deliveryRepository, dedupRepository, txDao)
                     break
                 }
 
-                applyResult(bridge.send(config, tx), tx.id, tx.fingerprint, deliveryRepository, dedupRepository)
+                applyResult(bridge.send(config, tx), tx, deliveryRepository, dedupRepository, txDao)
             }
 
             val next = dao.pendingForDelivery().filter { it.state == "queued" }
             if (next.size == pending.size && next == pending) {
                 // No progress (all failures) — stop; the next WorkManager run
                 // retries with exponential backoff (FR-011).
-                return
+                break
             }
             pending = next
         }
+
+        syncPendingMemos(bridge, config, txDao)
     }
 
     /**
@@ -139,24 +141,28 @@ object SyncEngine {
 
     private suspend fun applyResult(
         result: BridgeClient.SendResult,
-        deliveryId: String,
-        fingerprint: String,
+        tx: com.gomoney.capture.storage.NormalizedTransaction,
         deliveryRepository: DeliveryRepository,
         dedupRepository: DedupRepository,
+        txDao: com.gomoney.capture.storage.NormalizedTransactionDao,
     ) {
         when (result.status) {
             BridgeClient.SendResult.Status.CREATED -> {
-                deliveryRepository.transition(deliveryId, DeliveryState.SENT)
-                dedupRepository.record(fingerprint, "sent")
+                deliveryRepository.transition(tx.id, DeliveryState.SENT)
+                result.gomoneyTxnId?.let { txDao.updateGomoneyTxnId(tx.id, it) }
+                txDao.markMemoSynced(tx.id, tx.userMemo)
+                dedupRepository.record(tx.fingerprint, "sent")
             }
             BridgeClient.SendResult.Status.DUPLICATE -> {
                 // Duplicate ack is terminal: state=sent + category=duplicate (§3).
-                deliveryRepository.markDuplicateAcked(deliveryId, "bridge duplicate ack")
-                dedupRepository.record(fingerprint, "duplicate")
+                deliveryRepository.markDuplicateAcked(tx.id, "bridge duplicate ack")
+                result.gomoneyTxnId?.let { txDao.updateGomoneyTxnId(tx.id, it) }
+                if (tx.memoSyncState != "pending") txDao.markMemoSynced(tx.id, tx.userMemo)
+                dedupRepository.record(tx.fingerprint, "duplicate")
             }
             else -> {
                 deliveryRepository.transition(
-                    deliveryId,
+                    tx.id,
                     DeliveryState.FAILED,
                     result.errorCategory ?: ErrorCategory.SERVER_ERROR,
                     Redactor.safeDetail(result.errorDetail ?: "delivery error"),
@@ -169,16 +175,36 @@ object SyncEngine {
         bridge: BridgeClient,
         config: com.gomoney.capture.storage.ServerConfiguration,
         batch: List<com.gomoney.capture.storage.DeliveryRecord>,
+        deliveryDao: com.gomoney.capture.storage.DeliveryRecordDao,
         deliveryRepository: DeliveryRepository,
         dedupRepository: DedupRepository,
         txDao: com.gomoney.capture.storage.NormalizedTransactionDao,
     ) {
-        val txs = batch.mapNotNull { txDao.byId(it.id) }
+        val txs = batch.mapNotNull { record ->
+            val current = deliveryDao.byId(record.id) ?: return@mapNotNull null
+            if (current.state == "queued") {
+                deliveryRepository.transition(record.id, DeliveryState.SENDING) ?: return@mapNotNull null
+            } else if (current.state != "sending") {
+                return@mapNotNull null
+            }
+            txDao.byId(record.id)
+        }
         if (txs.isEmpty()) return
         val results = bridge.sendBulk(config, txs)
         txs.forEachIndexed { index, tx ->
             val result = results.getOrNull(index) ?: return@forEachIndexed
-            applyResult(result, tx.id, tx.fingerprint, deliveryRepository, dedupRepository)
+            applyResult(result, tx, deliveryRepository, dedupRepository, txDao)
+        }
+    }
+
+    private suspend fun syncPendingMemos(
+        bridge: BridgeClient,
+        config: com.gomoney.capture.storage.ServerConfiguration,
+        txDao: com.gomoney.capture.storage.NormalizedTransactionDao,
+    ) {
+        for (tx in txDao.pendingMemos()) {
+            val result = bridge.updateMemo(config, tx)
+            if (result.ok) txDao.markMemoSynced(tx.id, tx.userMemo)
         }
     }
 

@@ -15,6 +15,7 @@ import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
@@ -206,5 +207,46 @@ class TransactionSyncWorkerTest {
 
         assertEquals("failed", db.deliveryRecordDao().byId("noretry-1")?.state)
         assertEquals(0, server.requestCount)
+    }
+
+    /** Editing after a successful delivery uses a separate retryable memo sync. */
+    @Test
+    fun `sent transaction memo syncs and remains pending when bridge fails`() = runTest {
+        val tx = seedQueued("memo-1", "a".repeat(63) + "3")
+        deliveryRepository.transition(tx.id, DeliveryState.SENDING)
+        deliveryRepository.transition(tx.id, DeliveryState.SENT)
+        db.normalizedTransactionDao().updateMemo(tx.id, "coffee")
+        db.normalizedTransactionDao().updateGomoneyTxnId(tx.id, "42")
+        server.enqueue(MockResponse().setResponseCode(502).setBody("""{"error":"gomoney_unreachable"}"""))
+
+        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        assertEquals("pending", db.normalizedTransactionDao().byId(tx.id)?.memoSyncState)
+        val failedRequest = server.takeRequest()
+        assertEquals("PUT", failedRequest.method)
+        assertEquals("/v1/transactions/memo", failedRequest.path)
+
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"status":"updated"}"""))
+        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        assertEquals("synced", db.normalizedTransactionDao().byId(tx.id)?.memoSyncState)
+        assertEquals("coffee", JSONObject(server.takeRequest().body.readUtf8()).getString("memo"))
+    }
+
+    @Test
+    fun `duplicate ack still syncs an explicit memo clear`() = runTest {
+        val tx = seedQueued("memo-clear", "a".repeat(63) + "4")
+        db.normalizedTransactionDao().updateMemo(tx.id, null)
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"status":"duplicate","gomoneyTxnId":"42"}"""))
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"status":"updated","gomoneyTxnId":"42"}"""))
+
+        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        assertEquals("sent", db.deliveryRecordDao().byId(tx.id)?.state)
+        assertEquals("synced", db.normalizedTransactionDao().byId(tx.id)?.memoSyncState)
+        server.takeRequest() // original transaction delivery
+        val memoRequest = server.takeRequest()
+        assertEquals("/v1/transactions/memo", memoRequest.path)
+        assertEquals("", JSONObject(memoRequest.body.readUtf8()).getString("memo"))
     }
 }

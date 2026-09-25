@@ -80,6 +80,18 @@ on the transaction.
   blocks cleartext by default. TLS is added when the bridge contract gains
   TLS support.
 
+### Add a note for later context
+
+After a transaction is captured, a private notification offers an inline
+**Add note** reply, so you can enter context while it is fresh. You can also
+tap **Add note** or **Edit note** on a transaction in **Events** later. Use a
+short reminder such as `groceries`, `lunch`, or `cash for taxi`. The note is
+saved on the phone immediately and synced to the bridge; if the transaction was
+already sent, Go Money's title is updated without creating a second transaction.
+Notes are capped at 200 characters and do not affect deduplication. They are
+user-authored and are sent only to the configured trusted bridge, never logged
+by the app or bridge. Clear the field to remove a note.
+
 ### Limitation: one undifferentiated Blue account hint
 
 Every parsed Blue capture uses the single `blue-default` hint. The bridge

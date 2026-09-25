@@ -2,6 +2,7 @@ package androidbridge
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -152,6 +153,47 @@ func TestDedupPersistenceAcrossReopen(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, hit)
 	require.Equal(t, "42", hit.GomoneyTxnId)
+}
+
+func TestOpenDedupStoreMigratesExistingRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-dedup.db")
+	db, err := sql.Open("sqlite3", path)
+	require.NoError(t, err)
+	_, err = db.Exec(`CREATE TABLE fingerprint_registry (
+		fingerprint TEXT PRIMARY KEY,
+		bucket_key TEXT NOT NULL,
+		bank TEXT NOT NULL,
+		account_hint TEXT NOT NULL,
+		type TEXT NOT NULL,
+		amount INTEGER NOT NULL,
+		"desc" TEXT NOT NULL,
+		tx_unix INTEGER NOT NULL,
+		gomoney_txn_id TEXT NOT NULL DEFAULT '',
+		recorded_at TEXT NOT NULL
+	)`)
+	require.NoError(t, err)
+	_, err = db.Exec(`INSERT INTO fingerprint_registry
+		(fingerprint,bucket_key,bank,account_hint,type,amount,"desc",tx_unix,gomoney_txn_id,recorded_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"legacy-fingerprint", "bucket", "mellat", "****1234", TypeExpense, 500000, "coffee", 1, "7", time.Now().Format(time.RFC3339))
+	require.NoError(t, err)
+	require.NoError(t, db.Close())
+
+	registry, err := OpenDedupStore(path)
+	require.NoError(t, err)
+	defer func() { _ = registry.Close() }()
+
+	entry, err := registry.LookupExact(context.Background(), "legacy-fingerprint")
+	require.NoError(t, err)
+	require.NotNil(t, entry)
+	require.Empty(t, entry.MemoBaseTitle)
+
+	entry.MemoBaseTitle = "base title"
+	require.NoError(t, registry.SaveMemoBaseTitle(context.Background(), entry.Fingerprint, entry.MemoBaseTitle))
+	byID, err := registry.LookupGoMoneyTxnID(context.Background(), "7")
+	require.NoError(t, err)
+	require.NotNil(t, byID)
+	require.Equal(t, entry.MemoBaseTitle, byID.MemoBaseTitle)
 }
 
 func TestBucketKeyFormat(t *testing.T) {

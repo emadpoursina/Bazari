@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	gomoneypbv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/v1"
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // fakeGoMoneyClient is a hand-written fake of the GoMoneyClient interface
@@ -28,6 +30,8 @@ type fakeGoMoneyClient struct {
 	accounts      []GoMoneyAccount
 	currencies    []GoMoneyCurrency
 	created       []*transactionsv1.CreateTransactionRequest
+	updated       []*transactionsv1.UpdateTransactionRequest
+	existing      map[int64]*gomoneypbv1.Transaction
 	nextTxnId     int64
 	failConnect   bool // return a connect Unavailable error
 }
@@ -41,8 +45,63 @@ func (f *fakeGoMoneyClient) CreateTransaction(
 	}
 	f.created = append(f.created, req)
 	f.nextTxnId++
+	if f.existing == nil {
+		f.existing = make(map[int64]*gomoneypbv1.Transaction)
+	}
+	created := &gomoneypbv1.Transaction{
+		Id:                       f.nextTxnId,
+		Title:                    req.GetTitle(),
+		TransactionDate:          req.GetTransactionDate(),
+		TagIds:                   req.GetTagIds(),
+		Notes:                    req.GetNotes(),
+		Extra:                    req.GetExtra(),
+		ReferenceNumber:          req.ReferenceNumber,
+		InternalReferenceNumbers: req.GetInternalReferenceNumbers(),
+		CategoryId:               req.CategoryId,
+		GroupKey:                 req.GroupKey,
+	}
+	if expense := req.GetExpense(); expense != nil {
+		created.Type = gomoneypbv1.TransactionType_TRANSACTION_TYPE_EXPENSE
+		created.SourceAmount = expense.GetSourceAmount()
+		created.SourceCurrency = expense.GetSourceCurrency()
+		created.SourceAccountId = expense.GetSourceAccountId()
+		created.FxSourceAmount = expense.FxSourceAmount
+		created.FxSourceCurrency = expense.FxSourceCurrency
+		created.DestinationAmount = expense.GetDestinationAmount()
+		created.DestinationCurrency = expense.GetDestinationCurrency()
+		created.DestinationAccountId = expense.GetDestinationAccountId()
+	} else if income := req.GetIncome(); income != nil {
+		created.Type = gomoneypbv1.TransactionType_TRANSACTION_TYPE_INCOME
+		created.SourceAmount = income.GetSourceAmount()
+		created.SourceCurrency = income.GetSourceCurrency()
+		created.SourceAccountId = income.GetSourceAccountId()
+		created.DestinationAmount = income.GetDestinationAmount()
+		created.DestinationCurrency = income.GetDestinationCurrency()
+		created.DestinationAccountId = income.GetDestinationAccountId()
+	}
+	f.existing[f.nextTxnId] = created
 	return &transactionsv1.CreateTransactionResponse{
 		Transaction: &gomoneypbv1.Transaction{Id: f.nextTxnId},
+	}, nil
+}
+
+func (f *fakeGoMoneyClient) GetTransactionByID(ctx context.Context, id int64) (*gomoneypbv1.Transaction, error) {
+	if txn, ok := f.existing[id]; ok {
+		return txn, nil
+	}
+	return nil, errors.New("transaction not found")
+}
+
+func (f *fakeGoMoneyClient) UpdateTransaction(
+	ctx context.Context,
+	req *transactionsv1.UpdateTransactionRequest,
+) (*transactionsv1.UpdateTransactionResponse, error) {
+	f.updated = append(f.updated, req)
+	if txn, ok := f.existing[req.GetId()]; ok {
+		txn.Title = req.GetTransaction().GetTitle()
+	}
+	return &transactionsv1.UpdateTransactionResponse{
+		Transaction: &gomoneypbv1.Transaction{Id: req.GetId(), Title: req.GetTransaction().GetTitle()},
 	}, nil
 }
 
@@ -94,8 +153,12 @@ func newTestServer(t *testing.T, client GoMoneyClient) (*Server, *httptest.Serve
 }
 
 func bridgePost(t *testing.T, url, token string, body []byte) *http.Response {
+	return bridgeRequest(t, http.MethodPost, url, token, body)
+}
+
+func bridgeRequest(t *testing.T, method, url, token string, body []byte) *http.Response {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequest(method, url, bytes.NewReader(body))
 	require.NoError(t, err)
 	req.Header.Set("Authorization", "Bearer "+token)
 	res, err := http.DefaultClient.Do(req)
@@ -175,6 +238,147 @@ func TestCreateCreated(t *testing.T) {
 	require.Equal(t, "500000", created.GetExpense().DestinationAmount)
 	require.Equal(t, "IRR", created.GetExpense().DestinationCurrency)
 	require.Equal(t, int32(2), created.GetExpense().DestinationAccountId)
+}
+
+func TestCreateTransactionIncludesMemoInGoMoneyTitle(t *testing.T) {
+	client := &fakeGoMoneyClient{}
+	_, ts := newTestServer(t, client)
+	txn := validTxn(fingerprintHex(22))
+	txn.Memo = "groceries"
+
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Len(t, client.created, 1)
+	require.Equal(t, "Card purchase [mellat/****1234] — groceries", client.created[0].Title)
+}
+
+func TestUpdateMemoChangesTitleWithoutCreatingAnotherTransaction(t *testing.T) {
+	client := &fakeGoMoneyClient{}
+	_, ts := newTestServer(t, client)
+	txn := validTxn(fingerprintHex(23))
+	created := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+	require.Equal(t, http.StatusCreated, created.StatusCode)
+
+	update := &MemoUpdateRequest{
+		Fingerprint:  txn.Fingerprint,
+		GomoneyTxnId: "1",
+		Bank:         txn.Bank,
+		AccountHint:  txn.AccountHint,
+		Type:         txn.Type,
+		Amount:       txn.Amount,
+		TxAt:         txn.TxAt,
+		Description:  txn.Description,
+		Memo:         "  weekly groceries  ",
+	}
+	res := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/memo", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.JSONEq(t, `{"status":"updated","gomoneyTxnId":"1"}`, readBody(t, res))
+	require.Len(t, client.created, 1)
+	require.Len(t, client.updated, 1)
+	require.EqualValues(t, 1, client.updated[0].GetId())
+	require.Equal(t, "Card purchase [mellat/****1234] — weekly groceries", client.updated[0].GetTransaction().GetTitle())
+
+	update.Memo = "coffee"
+	res = bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/memo", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Equal(t, "Card purchase [mellat/****1234] — coffee", client.updated[1].GetTransaction().GetTitle())
+
+	update.Memo = ""
+	res = bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/memo", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Equal(t, "Card purchase [mellat/****1234]", client.updated[2].GetTransaction().GetTitle())
+}
+
+func TestUpdateMemoCanAnnotateLegacyBridgeEntry(t *testing.T) {
+	client := &fakeGoMoneyClient{existing: map[int64]*gomoneypbv1.Transaction{
+		41: {
+			Id:                   41,
+			Type:                 gomoneypbv1.TransactionType_TRANSACTION_TYPE_EXPENSE,
+			Title:                "Legacy expense [mellat/****1234]",
+			SourceAmount:         "-500000",
+			SourceCurrency:       "IRR",
+			SourceAccountId:      1,
+			DestinationAmount:    "500000",
+			DestinationCurrency:  "IRR",
+			DestinationAccountId: 2,
+			TransactionDate:      timestamppb.New(time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)),
+		},
+	}}
+	server, ts := newTestServer(t, client)
+	fingerprint := fingerprintHex(24)
+	txn := validTxn(fingerprint)
+	txAt, err := txn.TxAtTime()
+	require.NoError(t, err)
+	require.NoError(t, server.dedup.Reserve(context.Background(), &DedupEntry{
+		Fingerprint: fingerprint,
+		BucketKey:   BucketKey(txn.Bank, txn.AccountHint, txn.Type, txn.Amount, txAt),
+		Bank:        txn.Bank,
+		AccountHint: txn.AccountHint,
+		Type:        txn.Type,
+		Amount:      txn.Amount,
+		Desc:        normalizeDesc(txn.Description),
+		TxUnix:      txAt.Unix(),
+		RecordedAt:  time.Now().Format(time.RFC3339),
+	}))
+	require.NoError(t, server.dedup.Commit(context.Background(), fingerprint, "41"))
+
+	update := &MemoUpdateRequest{
+		Fingerprint:  fingerprint,
+		GomoneyTxnId: "41",
+		Bank:         txn.Bank,
+		AccountHint:  txn.AccountHint,
+		Type:         txn.Type,
+		Amount:       txn.Amount,
+		TxAt:         txn.TxAt,
+		Description:  txn.Description,
+		Memo:         "old purchase",
+	}
+	res := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/memo", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Len(t, client.created, 0)
+	require.Len(t, client.updated, 1)
+	require.EqualValues(t, 1, client.updated[0].GetTransaction().GetExpense().GetSourceAccountId())
+	require.Equal(t, "-500000", client.updated[0].GetTransaction().GetExpense().GetSourceAmount())
+	require.Equal(t, "Legacy expense [mellat/****1234] — old purchase", client.updated[0].GetTransaction().GetTitle())
+}
+
+func TestUpdateMemoAfterCrossSourceDuplicateTargetsSingleGoMoneyTransaction(t *testing.T) {
+	client := &fakeGoMoneyClient{}
+	_, ts := newTestServer(t, client)
+	first := validTxn(fingerprintHex(26))
+	created := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, first))
+	require.Equal(t, http.StatusCreated, created.StatusCode)
+
+	second := *first
+	second.Fingerprint = fingerprintHex(27)
+	second.TxAt = "2026-09-24T16:01:00+03:30"
+	duplicate := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, second))
+	require.Equal(t, http.StatusOK, duplicate.StatusCode)
+	require.Contains(t, readBody(t, duplicate), `"gomoneyTxnId":"1"`)
+
+	update := &MemoUpdateRequest{
+		Fingerprint:  second.Fingerprint,
+		GomoneyTxnId: "1",
+		Bank:         second.Bank,
+		AccountHint:  second.AccountHint,
+		Type:         second.Type,
+		Amount:       second.Amount,
+		TxAt:         second.TxAt,
+		Description:  second.Description,
+		Memo:         "same purchase context",
+	}
+	res := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/memo", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Len(t, client.created, 1)
+	require.Len(t, client.updated, 1)
+	require.EqualValues(t, 1, client.updated[0].GetId())
+}
+
+func TestUpdateMemoRejectsInvalidMemo(t *testing.T) {
+	_, ts := newTestServer(t, &fakeGoMoneyClient{})
+	update := &MemoUpdateRequest{Fingerprint: fingerprintHex(25), Memo: strings.Repeat("a", 201)}
+	res := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/memo", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
 }
 
 func TestCreateIncomeUsesDefaultIncomeAndMappedBankAccount(t *testing.T) {

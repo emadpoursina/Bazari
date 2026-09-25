@@ -6,6 +6,7 @@ import com.gomoney.capture.storage.ServerConfiguration
 import kotlinx.coroutines.test.runTest
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -174,5 +175,68 @@ class BridgeClientTest {
         val body = server.takeRequest().body.readUtf8()
         assertTrue(!body.contains("rawText"))
         assertTrue(body.contains("fingerprint"))
+    }
+
+    @Test
+    fun `IRR amount is divided by ten in single bridge request`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"status":"created"}"""))
+
+        BridgeClient().send(config, tx())
+
+        val body = JSONObject(server.takeRequest().body.readUtf8())
+        assertEquals(50_000L, body.getLong("amount"))
+    }
+
+    @Test
+    fun `non-IRR amount is unchanged in single bridge request`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"status":"created"}"""))
+
+        BridgeClient().send(config, tx().copy(currency = "USD"))
+
+        val body = JSONObject(server.takeRequest().body.readUtf8())
+        assertEquals(500_000L, body.getLong("amount"))
+    }
+
+    @Test
+    fun `IRR amount is divided by ten in bulk bridge request`() = runTest {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(200)
+                .setBody("""{"results":[{"status":"created"}]}"""),
+        )
+
+        BridgeClient().sendBulk(config, listOf(tx()))
+
+        val body = JSONObject(server.takeRequest().body.readUtf8())
+        val amount = body.getJSONArray("transactions").getJSONObject(0).getLong("amount")
+        assertEquals(50_000L, amount)
+    }
+
+    @Test
+    fun `memo update sends identity and note to protected bridge endpoint`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"status":"updated"}"""))
+
+        val result = BridgeClient().updateMemo(config, tx().copy(userMemo = "coffee", gomoneyTxnId = "12"))
+
+        assertTrue(result.ok)
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/v1/transactions/memo", request.path)
+        assertEquals("Bearer test-token", request.getHeader("Authorization"))
+        val body = JSONObject(request.body.readUtf8())
+        assertEquals("f".repeat(64), body.getString("fingerprint"))
+        assertEquals("12", body.getString("gomoneyTxnId"))
+        assertEquals("coffee", body.getString("memo"))
+        assertEquals(50_000L, body.getLong("amount"))
+    }
+
+    @Test
+    fun `memo field travels with initial create`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"status":"created"}"""))
+
+        BridgeClient().send(config, tx().copy(userMemo = "coffee"))
+
+        val body = JSONObject(server.takeRequest().body.readUtf8())
+        assertEquals("coffee", body.getString("memo"))
     }
 }

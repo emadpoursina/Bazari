@@ -19,8 +19,6 @@ class EventActions(
     private val deliveryRepository = DeliveryRepository(db.deliveryRecordDao())
     private val maintenance = MaintenanceRepository(
         rawEventDao = db.rawEventDao(),
-        normalizedTransactionDao = db.normalizedTransactionDao(),
-        deliveryRecordDao = db.deliveryRecordDao(),
     )
 
     /** Manual retry: FAILED → QUEUED, then expedited sync. */
@@ -30,6 +28,23 @@ class EventActions(
         return requeued.state == "queued"
     }
 
+    /** Save a private note locally first, then sync it to the bridge/Go Money. */
+    suspend fun saveMemo(transactionId: String, memo: String): Boolean {
+        val normalizedMemo = memo.trim().take(MAX_MEMO_LENGTH).ifBlank { null }
+        val current = db.normalizedTransactionDao().byId(transactionId) ?: return false
+        if (current.userMemo == normalizedMemo && current.memoSyncState == "synced") return true
+        if (db.normalizedTransactionDao().updateMemo(transactionId, normalizedMemo) == 0) return false
+        SyncEngine.enqueueExpedited(context)
+        return true
+    }
+
     /** Clear processed (sent/terminal) rows; pending/failed preserved. */
     suspend fun clearProcessed(): Int = maintenance.clearProcessed()
+
+    /** Clear all rows, including queued and failed items (requires user confirmation in the UI). */
+    suspend fun clearAll(): Int = maintenance.clearAll()
+
+    private companion object {
+        const val MAX_MEMO_LENGTH = 200
+    }
 }

@@ -43,8 +43,11 @@ Provider-independent parse output (FR-007).
 | fingerprint | String (64 hex) | see §Fingerprint; unique index |
 | parserName | String | e.g. `MellatParser` |
 | confidence | String enum: `high` \| `medium` \| `low` | set by parser |
+| userMemo | String? | User-authored context, e.g. `groceries`; ≤200 characters |
+| memoSyncState | String enum: `pending` \| `synced` | pending until the memo reaches Go Money |
+| gomoneyTxnId | String? | Go Money transaction id, retained for later memo edits |
 
-Validation: `amountMinor` > 0; currency = `IRR` (MVP); description ≤ 200 chars; Persian digits normalized before parse (FR-010).
+Validation: `amountMinor` > 0; currency = `IRR` (MVP); description and user memo ≤ 200 chars; Persian digits normalized before parse (FR-010).
 
 ### 3. DeliveryRecord (Android Room, 1:1 with NormalizedTransaction)
 
@@ -114,6 +117,7 @@ Registry iterates in priority order; first `canParse=true` wins; if none matches
 | bucketKey | TEXT | indexed secondary key: bank+account+type+amount+ts-2min-bucket |
 | gomoneyTxnId | TEXT/INT | id returned by Go Money |
 | recordedAt | TEXT | when Go Money acknowledged |
+| memoBaseTitle | TEXT | stable pre-memo title used to replace or clear a note |
 
 Lookup: exact fingerprint first; else `bucketKey`-window scan (±2 min) with matching bank+account+type+amount — if found, respond `duplicate`; else insert + forward to Go Money.
 
@@ -127,6 +131,8 @@ round(ts)             := ISO-8601 UTC, minute precision
 fingerprint = sha256( bank | accountHint | type | amountMinor | round(ts) | normalizedDescription )
 bucketKey   = bank | accountHint | type | amountMinor | floor(unix(ts) / 120)
 ```
+
+`userMemo` is intentionally excluded from the fingerprint: adding or editing a note must never turn one transaction into a new transaction or create a duplicate.
 
 - Same source duplicate → identical fingerprint → exact match.
 - Notification + SMS (≤2 min apart) → different `round(ts)` → exact mismatch → bucketKey window match → duplicate.

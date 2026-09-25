@@ -36,9 +36,12 @@ Deliver one normalized transaction. Idempotent by fingerprint.
   "currency": "IRR",
   "txAt": "2026-09-23T20:31:22+03:30",
   "description": "Card purchase",
+  "memo": "groceries",
   "fingerprint": "<64 hex>"
 }
 ```
+
+`memo` is optional and capped at 200 characters. A non-empty memo is appended to the Go Money title as ` — <memo>`. It is mutable and is **not** part of the fingerprint. The bridge returns the Go Money transaction id on both created and duplicate responses so the app can update the note later.
 
 **Responses**:
 
@@ -52,6 +55,34 @@ Deliver one normalized transaction. Idempotent by fingerprint.
 | 500 | `{ "error": "gomoney_error", "details": "..." }` | `SERVER_ERROR`; retry allowed |
 
 Notes: the bridge returns 201 only **after** Go Money's `CreateTransaction` succeeds (synchronous single round-trip). No async queueing inside the bridge — offline tolerance is the app outbox's job.
+
+### `PUT /v1/transactions/memo`
+
+Update or clear the user-authored note for a transaction already recorded in Go Money. This endpoint is also used when the original create returned a duplicate, so a note on either captured copy updates the single Go Money transaction. The app stores the memo locally first and retries this endpoint while offline.
+
+**Request** (all fields except `gomoneyTxnId` are required for exact/cross-source lookup):
+
+```json
+{
+  "fingerprint": "<64 hex>",
+  "gomoneyTxnId": "123",
+  "bank": "mellat",
+  "accountHint": "****1234",
+  "type": "expense",
+  "amount": 500000,
+  "txAt": "2026-09-23T20:31:22+03:30",
+  "description": "Card purchase",
+  "memo": "groceries"
+}
+```
+
+An empty `memo` clears the note. The bridge updates only the existing Go Money transaction title; amount, accounts, date, tags, and fingerprint are unchanged. A 200 response means the title update completed in Go Money:
+
+```json
+{ "status": "updated", "gomoneyTxnId": "123" }
+```
+
+Validation errors return 400; a transaction absent from the bridge registry returns 404; Go Money/network failures return 500/502 and the app retains the local pending memo for retry. The memo value is never logged.
 
 ### `POST /v1/transactions/bulk`
 

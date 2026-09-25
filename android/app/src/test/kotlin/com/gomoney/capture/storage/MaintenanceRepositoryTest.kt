@@ -30,8 +30,6 @@ class MaintenanceRepositoryTest {
         deliveryRepository = DeliveryRepository(db.deliveryRecordDao())
         maintenance = MaintenanceRepository(
             rawEventDao = db.rawEventDao(),
-            normalizedTransactionDao = db.normalizedTransactionDao(),
-            deliveryRecordDao = db.deliveryRecordDao(),
         )
     }
 
@@ -83,5 +81,44 @@ class MaintenanceRepositoryTest {
         assertEquals(2, remaining.size)
         assertTrue(remaining.any { it.id == "pending-1" })
         assertTrue(remaining.any { it.id == "failed-1" })
+    }
+
+    @Test
+    fun `clear all removes every event across states and cascades children`() = runTest {
+        seed("sent-2")
+        seed("pending-2")
+        seed("failed-2")
+
+        deliveryRepository.transition("sent-2", com.gomoney.capture.model.DeliveryState.SENDING)
+        deliveryRepository.transition("sent-2", com.gomoney.capture.model.DeliveryState.SENT)
+        deliveryRepository.transition("failed-2", com.gomoney.capture.model.DeliveryState.SENDING)
+        deliveryRepository.transition("failed-2", com.gomoney.capture.model.DeliveryState.FAILED, ErrorCategory.NETWORK_ERROR)
+
+        val removed = maintenance.clearAll()
+        assertEquals(3, removed)
+
+        // Cascade: normalized transactions and delivery records are gone too.
+        assertEquals(0, db.normalizedTransactionDao().count())
+        assertEquals(0, db.deliveryRecordDao().pendingForDelivery().size)
+        assertEquals(0, db.deliveryRecordDao().sentCount())
+        assertEquals(0, db.deliveryRecordDao().failedCount())
+        assertTrue(db.rawEventDao().byId("sent-2") == null)
+        assertTrue(db.rawEventDao().byId("pending-2") == null)
+        assertTrue(db.rawEventDao().byId("failed-2") == null)
+    }
+
+    @Test
+    fun `clear preserves sent transaction with memo waiting to sync`() = runTest {
+        seed("memo-pending")
+        deliveryRepository.transition("memo-pending", com.gomoney.capture.model.DeliveryState.SENDING)
+        deliveryRepository.transition("memo-pending", com.gomoney.capture.model.DeliveryState.SENT)
+        db.normalizedTransactionDao().updateMemo("memo-pending", "cash for taxi")
+
+        val removed = maintenance.clearProcessed()
+
+        assertEquals(0, removed)
+        assertEquals("sent", db.deliveryRecordDao().byId("memo-pending")?.state)
+        assertEquals("cash for taxi", db.normalizedTransactionDao().byId("memo-pending")?.userMemo)
+        assertTrue(db.rawEventDao().byId("memo-pending") != null)
     }
 }

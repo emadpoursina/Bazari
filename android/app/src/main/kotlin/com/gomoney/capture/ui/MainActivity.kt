@@ -104,8 +104,14 @@ private fun AppTabs(
                     onRetry = { deliveryId ->
                         scope.launch { eventActions.retry(deliveryId) }
                     },
+                    onSaveMemo = { transactionId, memo ->
+                        scope.launch { eventActions.saveMemo(transactionId, memo) }
+                    },
                     onClearProcessed = {
                         scope.launch { eventActions.clearProcessed() }
+                    },
+                    onClearAll = {
+                        scope.launch { eventActions.clearAll() }
                     },
                 )
                 2 -> SettingsScreen(

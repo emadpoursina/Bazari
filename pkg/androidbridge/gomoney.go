@@ -2,6 +2,8 @@ package androidbridge
 
 import (
 	"context"
+	"errors"
+	"math"
 	"net/http"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	accountsv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/accounts/v1"
 	currencyv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/currency/v1"
 	transactionsv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/transactions/v1"
+	gomoneypbv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/v1"
 	"connectrpc.com/connect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -39,8 +42,7 @@ func newProtoTimestamp(t time.Time) *timestamppb.Timestamp {
 }
 
 // GoMoneyConnectClient implements GoMoneyClient against Go Money's public
-// ConnectRPC API (AccountsService/ListAccounts, CurrencyService/GetCurrencies,
-// and TransactionsService/CreateTransaction).
+// ConnectRPC API.
 type GoMoneyConnectClient struct {
 	client         transactionsv1connect.TransactionsServiceClient
 	accountsClient accountsv1connect.AccountsServiceClient
@@ -118,6 +120,41 @@ func (c *GoMoneyConnectClient) CreateTransaction(
 	req *transactionsv1.CreateTransactionRequest,
 ) (*transactionsv1.CreateTransactionResponse, error) {
 	res, err := c.client.CreateTransaction(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return res.Msg, nil
+}
+
+// GetTransactionByID reads one transaction for a title-only memo update.
+func (c *GoMoneyConnectClient) GetTransactionByID(
+	ctx context.Context,
+	id int64,
+) (*gomoneypbv1.Transaction, error) {
+	if id <= 0 || id > math.MaxInt32 {
+		return nil, errors.New("transaction id is outside the supported range")
+	}
+	res, err := c.client.ListTransactions(ctx, connect.NewRequest(&transactionsv1.ListTransactionsRequest{
+		Ids:   []int32{int32(id)},
+		Limit: 1,
+	}))
+	if err != nil {
+		return nil, err
+	}
+	for _, txn := range res.Msg.GetTransactions() {
+		if txn != nil && txn.GetId() == id {
+			return txn, nil
+		}
+	}
+	return nil, errors.New("transaction not found")
+}
+
+// UpdateTransaction forwards a title-only or full transaction update.
+func (c *GoMoneyConnectClient) UpdateTransaction(
+	ctx context.Context,
+	req *transactionsv1.UpdateTransactionRequest,
+) (*transactionsv1.UpdateTransactionResponse, error) {
+	res, err := c.client.UpdateTransaction(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

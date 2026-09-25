@@ -46,6 +46,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/ping", s.handlePing)
 	mux.HandleFunc("POST /v1/transactions", s.handleCreate)
 	mux.HandleFunc("POST /v1/transactions/bulk", s.handleBulk)
+	mux.HandleFunc("PUT /v1/transactions/memo", s.handleUpdateMemo)
 	mux.HandleFunc("GET /v1/mappings", s.handleGetMappings)
 	mux.HandleFunc("PUT /v1/mappings", s.handlePutMappings)
 	return AuthMiddleware(s.token, mux)

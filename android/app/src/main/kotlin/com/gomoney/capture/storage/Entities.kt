@@ -1,5 +1,6 @@
 package com.gomoney.capture.storage
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -61,6 +62,10 @@ data class NormalizedTransaction(
     val fingerprint: String, // 64 hex (§Fingerprint)
     val parserName: String,
     val confidence: String, // HIGH | MEDIUM | LOW
+    val userMemo: String? = null,
+    @ColumnInfo(defaultValue = "'synced'")
+    val memoSyncState: String = "synced", // pending | synced
+    val gomoneyTxnId: String? = null,
 )
 
 /** TxType accessor outside Room's field processing. */

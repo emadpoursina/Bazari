@@ -12,14 +12,13 @@ import com.gomoney.capture.storage.NormalizedTransactionDao
  */
 class MaintenanceRepository(
     private val rawEventDao: RawEventDao,
-    private val normalizedTransactionDao: NormalizedTransactionDao,
-    private val deliveryRecordDao: DeliveryRecordDao,
 ) {
 
-    /** Clear sent (terminal) rows only; pending/failed are preserved. */
-    suspend fun clearProcessed(): Int {
-        val removed = deliveryRecordDao.clearSent()
-        rawEventDao.deleteProcessedSources()
-        return removed
-    }
+    /** Clear sent (terminal) sources only; pending/failed and unsynced memos are preserved. */
+    suspend fun clearProcessed(): Int = rawEventDao.deleteProcessedSources()
+
+    /** Clear everything, including queued and failed items. Associated
+     *  normalized transactions and delivery records cascade from raw_events;
+     *  settings and dedup_cache are untouched. */
+    suspend fun clearAll(): Int = rawEventDao.deleteAll()
 }

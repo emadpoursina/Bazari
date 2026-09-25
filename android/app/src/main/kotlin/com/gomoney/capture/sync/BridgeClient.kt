@@ -62,6 +62,8 @@ class BridgeClient(
 
     data class PingResult(val ok: Boolean, val gomoneyReachable: Boolean, val unauthorized: Boolean)
 
+    data class MemoUpdateResult(val ok: Boolean, val errorDetail: String?)
+
     // --- public API ---
 
     suspend fun ping(config: ServerConfiguration): PingResult {
@@ -104,6 +106,34 @@ class BridgeClient(
             }
         }.getOrElse {
             transactions.map { SendResult.failure(ErrorCategory.NETWORK_ERROR, "network unreachable") }
+        }
+    }
+
+    /** Update the title note for an already-recorded Go Money transaction. */
+    suspend fun updateMemo(config: ServerConfiguration, tx: NormalizedTransaction): MemoUpdateResult {
+        val payload = JSONObject()
+            .put("fingerprint", tx.fingerprint)
+            .put("gomoneyTxnId", tx.gomoneyTxnId)
+            .put("bank", tx.bank)
+            .put("accountHint", tx.accountHint)
+            .put("type", tx.type)
+            .put("amount", bridgeAmount(tx))
+            .put("txAt", tx.txAt)
+            .put("description", tx.description)
+            .put("memo", tx.userMemo.orEmpty())
+        val request = buildRequest(config, "PUT", "/v1/transactions/memo", body(payload.toString()))
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                okHttp.newCall(request).execute().use { res ->
+                    if (res.isSuccessful) {
+                        MemoUpdateResult(true, null)
+                    } else {
+                        MemoUpdateResult(false, "memo update rejected (${res.code})")
+                    }
+                }
+            }.getOrElse {
+                MemoUpdateResult(false, "network unreachable")
+            }
         }
     }
 
@@ -189,6 +219,8 @@ class BridgeClient(
         const val BULK_MIN_ITEMS = 5
         const val BULK_MAX_ITEMS = 50
 
+        private const val IRR_CURRENCY = "IRR"
+        private const val IRR_AMOUNT_DIVISOR = 10L
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
 
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
@@ -203,10 +235,16 @@ class BridgeClient(
             .put("bank", tx.bank)
             .put("accountHint", tx.accountHint)
             .put("type", tx.type)
-            .put("amount", tx.amountMinor)
+            .put("amount", bridgeAmount(tx))
             .put("currency", tx.currency)
             .put("txAt", tx.txAt)
             .put("description", tx.description)
+            .put("memo", tx.userMemo.orEmpty())
             .put("fingerprint", tx.fingerprint)
+
+        // Preserve the captured amount locally; apply the IRR scale adjustment
+        // only at the bridge boundary (shared by single and bulk requests).
+        private fun bridgeAmount(tx: NormalizedTransaction): Long =
+            if (tx.currency == IRR_CURRENCY) tx.amountMinor / IRR_AMOUNT_DIVISOR else tx.amountMinor
     }
 }

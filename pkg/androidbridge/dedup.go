@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,16 +16,17 @@ import (
 
 // DedupEntry is one row of the bridge fingerprint registry (data-model.md §7).
 type DedupEntry struct {
-	Fingerprint  string // PK, exact sha256
-	BucketKey    string // bank|account|type|amount|2min-bucket (indexed)
-	Bank         string
-	AccountHint  string
-	Type         string
-	Amount       int64
-	Desc         string // normalized description (lowercase, whitespace-collapsed)
-	TxUnix       int64  // transaction time (unix seconds) for the ±2 min window check
-	GomoneyTxnId string
-	RecordedAt   string
+	Fingerprint   string // PK, exact sha256
+	BucketKey     string // bank|account|type|amount|2min-bucket (indexed)
+	Bank          string
+	AccountHint   string
+	Type          string
+	Amount        int64
+	Desc          string // normalized description (lowercase, whitespace-collapsed)
+	TxUnix        int64  // transaction time (unix seconds) for the ±2 min window check
+	GomoneyTxnId  string
+	RecordedAt    string
+	MemoBaseTitle string
 }
 
 // BucketKey computes the ±2-min epoch bucket key per data-model.md §Fingerprint.
@@ -69,7 +71,8 @@ CREATE TABLE IF NOT EXISTS fingerprint_registry (
     "desc"        TEXT NOT NULL,
     tx_unix       INTEGER NOT NULL,
     gomoney_txn_id TEXT NOT NULL DEFAULT '',
-    recorded_at   TEXT NOT NULL
+    recorded_at   TEXT NOT NULL,
+    memo_base_title TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_fingerprint_registry_bucket ON fingerprint_registry(bucket_key);
 `
@@ -77,8 +80,43 @@ CREATE INDEX IF NOT EXISTS idx_fingerprint_registry_bucket ON fingerprint_regist
 		_ = db.Close()
 		return nil, fmt.Errorf("init dedup schema: %w", err)
 	}
+	if err = ensureColumn(db, "memo_base_title", `ALTER TABLE fingerprint_registry ADD COLUMN memo_base_title TEXT NOT NULL DEFAULT ''`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate dedup schema: %w", err)
+	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS idx_fingerprint_registry_gomoney_txn_id ON fingerprint_registry(gomoney_txn_id)`); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("index Go Money transaction id: %w", err)
+	}
 
 	return &FingerprintRegistry{db: db}, nil
+}
+
+func ensureColumn(db *sql.DB, name, alter string) error {
+	rows, err := db.Query(`PRAGMA table_info(fingerprint_registry)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var column, dataType string
+		var defaultValue any
+		if err = rows.Scan(&cid, &column, &dataType, &notnull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		if strings.EqualFold(column, name) {
+			return rows.Err()
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	_, err = db.Exec(alter)
+	return err
 }
 
 // Close closes the underlying database.
@@ -94,7 +132,19 @@ func (r *FingerprintRegistry) DeliverLock() *sync.Mutex {
 
 func scanEntry(row scanner) (*DedupEntry, error) {
 	var e DedupEntry
-	err := row.Scan(&e.Fingerprint, &e.BucketKey, &e.Bank, &e.AccountHint, &e.Type, &e.Amount, &e.Desc, &e.TxUnix, &e.GomoneyTxnId, &e.RecordedAt)
+	err := row.Scan(
+		&e.Fingerprint,
+		&e.BucketKey,
+		&e.Bank,
+		&e.AccountHint,
+		&e.Type,
+		&e.Amount,
+		&e.Desc,
+		&e.TxUnix,
+		&e.GomoneyTxnId,
+		&e.RecordedAt,
+		&e.MemoBaseTitle,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +159,7 @@ type scanner interface {
 // LookupExact returns the entry with the exact fingerprint, or nil.
 func (r *FingerprintRegistry) LookupExact(ctx context.Context, fingerprint string) (*DedupEntry, error) {
 	row := r.db.QueryRowContext(ctx,
-		`SELECT fingerprint, bucket_key, bank, account_hint, type, amount, "desc", tx_unix, gomoney_txn_id, recorded_at
+		`SELECT fingerprint, bucket_key, bank, account_hint, type, amount, "desc", tx_unix, gomoney_txn_id, recorded_at, memo_base_title
 		 FROM fingerprint_registry WHERE fingerprint = ?`, fingerprint)
 	e, err := scanEntry(row)
 	if err == sql.ErrNoRows {
@@ -132,7 +182,7 @@ func (r *FingerprintRegistry) LookupBucketWindow(
 		return BucketKey(bank, accountHint, typ, amount, time.Unix(bucket*120, 0))
 	}
 	rows, err := r.db.QueryContext(ctx, `
-SELECT fingerprint, bucket_key, bank, account_hint, type, amount, "desc", tx_unix, gomoney_txn_id, recorded_at
+SELECT fingerprint, bucket_key, bank, account_hint, type, amount, "desc", tx_unix, gomoney_txn_id, recorded_at, memo_base_title
 FROM fingerprint_registry
 WHERE bucket_key IN (?, ?, ?)
   AND bank = ? AND account_hint = ? AND type = ? AND amount = ? AND "desc" = ?`,
@@ -164,9 +214,45 @@ WHERE bucket_key IN (?, ?, ?)
 // Delete if Go Money fails.
 func (r *FingerprintRegistry) Reserve(ctx context.Context, e *DedupEntry) error {
 	_, err := r.db.ExecContext(ctx, `
-INSERT INTO fingerprint_registry (fingerprint, bucket_key, bank, account_hint, type, amount, "desc", tx_unix, gomoney_txn_id, recorded_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.Fingerprint, e.BucketKey, e.Bank, e.AccountHint, e.Type, e.Amount, e.Desc, e.TxUnix, e.GomoneyTxnId, e.RecordedAt)
+INSERT INTO fingerprint_registry (fingerprint, bucket_key, bank, account_hint, type, amount, "desc", tx_unix, gomoney_txn_id, recorded_at, memo_base_title)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.Fingerprint,
+		e.BucketKey,
+		e.Bank,
+		e.AccountHint,
+		e.Type,
+		e.Amount,
+		e.Desc,
+		e.TxUnix,
+		e.GomoneyTxnId,
+		e.RecordedAt,
+		e.MemoBaseTitle,
+	)
+	return err
+}
+
+// LookupGoMoneyTxnID returns the registry row associated with a recorded Go Money id.
+func (r *FingerprintRegistry) LookupGoMoneyTxnID(ctx context.Context, gomoneyTxnID string) (*DedupEntry, error) {
+	if strings.TrimSpace(gomoneyTxnID) == "" {
+		return nil, nil
+	}
+	row := r.db.QueryRowContext(ctx,
+		`SELECT fingerprint, bucket_key, bank, account_hint, type, amount, "desc", tx_unix, gomoney_txn_id, recorded_at, memo_base_title
+		 FROM fingerprint_registry WHERE gomoney_txn_id = ? LIMIT 1`, gomoneyTxnID)
+	e, err := scanEntry(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return e, err
+}
+
+// SaveMemoBaseTitle persists the unannotated Go Money title for safe memo replacement/removal.
+func (r *FingerprintRegistry) SaveMemoBaseTitle(ctx context.Context, fingerprint, title string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE fingerprint_registry SET memo_base_title = ? WHERE fingerprint = ?`,
+		title,
+		fingerprint,
+	)
 	return err
 }
 

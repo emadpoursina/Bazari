@@ -122,6 +122,21 @@ While developing parsers, the developer can enable a debug mode to inspect raw c
 
 ---
 
+### User Story 8 - Add personal context to a captured transaction (Priority: P2)
+
+The user can add or edit a short note in the Events list after a transaction is captured, such as what a cash withdrawal was for. The note is saved locally immediately and reaches Go Money even if the transaction was already delivered or the phone is offline.
+
+**Independent Test**: Deliver a transaction, add a note afterward, and verify the same Go Money transaction is updated without creating a second one. Repeat while the bridge is offline, then restore connectivity and verify the note syncs automatically.
+
+**Acceptance Scenarios**:
+
+1. **Given** a captured transaction, **When** the user replies to the capture notification or saves a note in Events, **Then** it is visible in the Events list immediately and remains available after app/device restarts.
+2. **Given** the transaction was already sent to Go Money, **When** its note syncs, **Then** the bridge updates that same Go Money transaction and does not create another one.
+3. **Given** the phone or bridge is offline, **When** a note is saved, **Then** the note remains locally pending and syncs automatically when connectivity returns.
+4. **Given** the user clears a note, **When** the change reaches Go Money, **Then** the note is removed without changing transaction amount, accounts, date, or deduplication identity.
+
+---
+
 ### Edge Cases
 
 - What happens when notification-listener permission is revoked while capture is active? → The app detects the missing permission, stops capturing, and clearly surfaces the permission state in settings/dashboard; queued data is preserved.
@@ -185,6 +200,9 @@ While developing parsers, the developer can enable a debug mode to inspect raw c
 
 - **FR-029**: Every bank parser MUST be validated against stored raw-event fixtures covering that bank's common transaction types (e.g., purchase, withdrawal, deposit, transfer).
 - **FR-030**: System MUST be verifiable end-to-end: a captured event results in exactly one Go Money transaction, and repeated/parallel captures of the same event result in exactly one.
+- **FR-031**: Users MUST be able to add, edit, and clear a user-authored note of up to 200 characters on a captured transaction; note changes MUST be saved locally before network delivery and survive offline periods and restarts.
+- **FR-032**: System MUST sync notes for both queued and already-sent transactions, updating an existing Go Money transaction rather than creating a second transaction; note delivery MUST be retryable independently of transaction creation.
+- **FR-033**: User-authored notes MUST NOT affect a transaction's deduplication fingerprint or financial fields, and MUST NOT be written to production logs.
 
 ### Key Entities *(include if feature involves data)*
 
@@ -206,6 +224,7 @@ While developing parsers, the developer can enable a debug mode to inspect raw c
 - **SC-006**: A user can determine the system's health (connection, pending/sent/failed counts) within 5 seconds of opening the app.
 - **SC-007**: No sensitive raw transaction content appears in production logs or in any data leaving the user's trusted network; network communication with the bridge is authenticated (static token over plain HTTP within the trusted LAN).
 - **SC-008**: The end-to-end journey (transaction in bank app → transaction recorded in Go Money) completes without the user opening the capture app at all.
+- **SC-009**: A note entered after a transaction is sent is eventually visible in the same Go Money transaction after bridge connectivity returns, with no duplicate transaction created.
 
 ## Assumptions
 

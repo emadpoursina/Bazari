@@ -8,13 +8,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
@@ -43,6 +49,8 @@ data class EventRow(
     val txId: String,
     val type: String = "expense",
     val description: String = "",
+    val userMemo: String? = null,
+    val memoSyncState: String = "synced",
 )
 
 class EventsViewModel(db: AppDatabase) : ViewModel() {
@@ -68,6 +76,8 @@ class EventsViewModel(db: AppDatabase) : ViewModel() {
                 txId = tx.id,
                 type = tx.type,
                 description = tx.description,
+                userMemo = tx.userMemo,
+                memoSyncState = tx.memoSyncState,
             )
         }
         // Parse-error rows: delivery record without a normalized transaction.
@@ -93,6 +103,8 @@ fun EventsScreen(
     state: EventsViewModel.EventsState,
     onRetry: (String) -> Unit = {},
     onClearProcessed: () -> Unit = {},
+    onClearAll: () -> Unit = {},
+    onSaveMemo: (String, String) -> Unit = { _, _ -> },
 ) {
     if (state.rows.isEmpty()) {
         Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
@@ -100,44 +112,121 @@ fun EventsScreen(
         }
         return
     }
+    var showClearAllDialog by remember { mutableStateOf(false) }
+    if (showClearAllDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearAllDialog = false },
+            title = { Text("Clear all events?") },
+            text = {
+                Text(
+                    "This permanently deletes every captured event, including queued and failed " +
+                        "deliveries that have not reached Go Money. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showClearAllDialog = false
+                    onClearAll()
+                }) { Text("Clear all") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearAllDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         item {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = onClearProcessed) { Text("Clear processed") }
+                OutlinedButton(onClick = { showClearAllDialog = true }) { Text("Clear all") }
             }
         }
         items(state.rows, key = { it.txId }) { row ->
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Column(modifier = Modifier.padding(12.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        Text(
-                            text = if (row.amountMinor == 0L) "—" else "${row.amountMinor} IRR",
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(text = row.state.uppercase(), style = MaterialTheme.typography.labelMedium)
+            EventCard(row, onRetry, onSaveMemo)
+        }
+    }
+}
+
+@Composable
+private fun EventCard(
+    row: EventRow,
+    onRetry: (String) -> Unit,
+    onSaveMemo: (String, String) -> Unit,
+) {
+    var editingMemo by remember(row.txId) { mutableStateOf(false) }
+    var memoDraft by remember(row.txId, row.userMemo) { mutableStateOf(row.userMemo.orEmpty()) }
+
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = if (row.amountMinor == 0L) "—" else "${row.amountMinor} IRR",
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(text = row.state.uppercase(), style = MaterialTheme.typography.labelMedium)
+            }
+            Text(text = "${row.bank} · ${row.type}", style = MaterialTheme.typography.bodySmall)
+            if (row.description.isNotBlank()) {
+                Text(text = row.description, style = MaterialTheme.typography.bodySmall, maxLines = 2)
+            }
+            Text(text = formatTime(row.txAt), style = MaterialTheme.typography.bodySmall)
+            row.errorCategory?.let {
+                Text(text = "category: $it", style = MaterialTheme.typography.labelSmall)
+            }
+
+            if (row.amountMinor > 0L) {
+                if (!row.userMemo.isNullOrBlank()) {
+                    Text("Note: ${row.userMemo}", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (row.memoSyncState == "pending") {
+                    val pendingLabel = if (row.userMemo.isNullOrBlank()) {
+                        "Note removal saved on this phone · waiting to sync"
+                    } else {
+                        "Saved on this phone · waiting to sync"
                     }
-                    Text(text = "${row.bank} · ${row.type}", style = MaterialTheme.typography.bodySmall)
-                    if (row.description.isNotBlank()) {
-                        Text(text = row.description, style = MaterialTheme.typography.bodySmall, maxLines = 2)
-                    }
-                    Text(text = formatTime(row.txAt), style = MaterialTheme.typography.bodySmall)
-                    row.errorCategory?.let {
-                        Text(text = "category: $it", style = MaterialTheme.typography.labelSmall)
-                    }
-                    if (row.state == "failed") {
-                        OutlinedButton(onClick = { onRetry(row.txId) }) {
-                            Text("Retry delivery")
+                    Text(pendingLabel, style = MaterialTheme.typography.labelSmall)
+                }
+                if (editingMemo) {
+                    OutlinedTextField(
+                        value = memoDraft,
+                        onValueChange = { if (it.length <= MAX_MEMO_LENGTH) memoDraft = it },
+                        label = { Text("What was this for?") },
+                        placeholder = { Text("e.g. groceries, lunch, taxi") },
+                        modifier = Modifier.fillMaxWidth(),
+                        supportingText = { Text("Saved on this phone and synced to Go Money · ${memoDraft.length}/$MAX_MEMO_LENGTH") },
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = {
+                            onSaveMemo(row.txId, memoDraft)
+                            editingMemo = false
+                        }) {
+                            Text("Save note")
+                        }
+                        OutlinedButton(onClick = { editingMemo = false }) {
+                            Text("Cancel")
                         }
                     }
+                } else {
+                    OutlinedButton(onClick = { editingMemo = true }) {
+                        Text(if (row.userMemo.isNullOrBlank()) "Add note" else "Edit note")
+                    }
+                }
+            }
+
+            if (row.state == "failed") {
+                OutlinedButton(onClick = { onRetry(row.txId) }) {
+                    Text("Retry delivery")
                 }
             }
         }
     }
 }
+
+private const val MAX_MEMO_LENGTH = 200
 
 private fun formatTime(txAt: String): String = runCatching {
     OffsetDateTime.parse(txAt).format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))

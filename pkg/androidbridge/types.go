@@ -57,6 +57,7 @@ type NormalizedTransaction struct {
 	Currency      string `json:"currency"`
 	TxAt          string `json:"txAt"` // ISO-8601 with offset
 	Description   string `json:"description"`
+	Memo          string `json:"memo,omitempty"`
 	Fingerprint   string `json:"fingerprint"`
 }
 
@@ -86,6 +87,25 @@ func (t *NormalizedTransaction) TxAtTime() (time.Time, error) {
 // CreateTransactionResponse is the response body for `POST /v1/transactions`.
 type CreateTransactionResponse struct {
 	Status       string `json:"status"` // created | duplicate
+	GomoneyTxnId string `json:"gomoneyTxnId,omitempty"`
+}
+
+// MemoUpdateRequest updates the user note on a transaction already recorded in Go Money.
+type MemoUpdateRequest struct {
+	Fingerprint  string `json:"fingerprint"`
+	GomoneyTxnId string `json:"gomoneyTxnId,omitempty"`
+	Bank         string `json:"bank"`
+	AccountHint  string `json:"accountHint"`
+	Type         string `json:"type"`
+	Amount       int64  `json:"amount"`
+	TxAt         string `json:"txAt"`
+	Description  string `json:"description"`
+	Memo         string `json:"memo"`
+}
+
+// MemoUpdateResponse confirms the note was written to Go Money.
+type MemoUpdateResponse struct {
+	Status       string `json:"status"` // updated
 	GomoneyTxnId string `json:"gomoneyTxnId,omitempty"`
 }
 
@@ -131,6 +151,11 @@ type GoMoneyClient interface {
 		ctx context.Context,
 		req *transactionsv1.CreateTransactionRequest,
 	) (*transactionsv1.CreateTransactionResponse, error)
+	GetTransactionByID(ctx context.Context, id int64) (*gomoneypbv1.Transaction, error)
+	UpdateTransaction(
+		ctx context.Context,
+		req *transactionsv1.UpdateTransactionRequest,
+	) (*transactionsv1.UpdateTransactionResponse, error)
 
 	// Ping reports whether the Go Money backend is currently reachable.
 	Ping(ctx context.Context) error

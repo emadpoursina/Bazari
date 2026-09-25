@@ -51,6 +51,10 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".sync.MemoReplyReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"
