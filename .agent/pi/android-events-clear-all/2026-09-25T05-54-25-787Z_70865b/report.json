@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "jobName": "android-events-clear-all",
+  "runId": "2026-09-25T05-54-25-787Z_70865b",
+  "runDir": "/Users/emad/Projects/playground/Bazari/.agent/pi/android-events-clear-all/2026-09-25T05-54-25-787Z_70865b",
+  "lifecycle": "completed",
+  "exitCode": 0,
+  "signal": null,
+  "summaryExtracted": true,
+  "summary": "**STATUS:** ok\n\n**SUMMARY:** Added a confirmed \"Clear all\" action to the Android Events tab. `RawEventDao.deleteAll()` (`DELETE FROM raw_events`) removes every captured event; existing Room `ForeignKey.CASCADE` on `normalized_transactions.sourceEventId` and `delivery_records.sourceEventId` cleans up associated rows (queued/failed/sent all included), so no migration or schema change was needed. `MaintenanceRepository.clearAll()` and `EventActions.clearAll()` pass the action through untouched; settings and `dedup_cache` are never touched. `EventsScreen` now renders \"Clear all\" beside \"Clear processed\" and gates it behind an `AlertDialog` whose copy explicitly warns that queued and failed deliveries that have not reached Go Money are included and the action cannot be undone; `MainActivity` wires `onClearAll` through the existing coroutine scope. A new repository test proves clear all removes raw events, normalized transactions, and delivery records across sent/pending/failed states; the two pre-existing clear-processed tests were left unchanged and still pass. All existing uncommitted work in the working tree was preserved (edits were additive only).\n\n**Files changed:**\n- `android/app/src/main/kotlin/com/gomoney/capture/storage/Daos.kt` — added `RawEventDao.deleteAll()`\n- `android/app/src/main/kotlin/com/gomoney/capture/storage/MaintenanceRepository.kt` — added `clearAll()`\n- `android/app/src/main/kotlin/com/gomoney/capture/ui/EventActions.kt` — added `clearAll()`\n- `android/app/src/main/kotlin/com/gomoney/capture/ui/EventsScreen.kt` — added `onClearAll` param, \"Clear all\" button, and confirmation dialog\n- `android/app/src/main/kotlin/com/gomoney/capture/ui/MainActivity.kt` — wired `onClearAll`\n- `android/app/src/test/kotlin/com/gomoney/capture/storage/MaintenanceRepositoryTest.kt` — added `clear all removes every event across states and cascades children` test\n\n**Tests run:** `./gradlew :app:testDebugUnitTest --tests \"com.gomoney.capture.storage.MaintenanceRepositoryTest\"` (pass), then full `./gradlew :app:testDebugUnitTest` suite (pass). No commits, pushes, or deploys; specs/backend untouched.",
+  "stopReason": "stop",
+  "errorMessage": null,
+  "stderrTail": null
+}

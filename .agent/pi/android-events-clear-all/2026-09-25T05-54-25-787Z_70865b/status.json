@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "jobName": "android-events-clear-all",
+  "runId": "2026-09-25T05-54-25-787Z_70865b",
+  "runDir": "/Users/emad/Projects/playground/Bazari/.agent/pi/android-events-clear-all/2026-09-25T05-54-25-787Z_70865b",
+  "print": true,
+  "lifecycle": "completed",
+  "processAlive": false,
+  "pid": 29094,
+  "lastEventType": null,
+  "lastEventAt": null,
+  "watcherUpdatedAt": "2026-09-25T05:55:47.998Z",
+  "current": null,
+  "currentAgeMs": null,
+  "quietMs": null,
+  "recent": [],
+  "parseErrors": 0,
+  "lastError": null,
+  "sessionId": null,
+  "exitCode": 0,
+  "signal": null
+}
