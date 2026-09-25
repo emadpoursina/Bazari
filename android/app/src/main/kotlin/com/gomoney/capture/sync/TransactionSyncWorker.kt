@@ -103,7 +103,7 @@ object SyncEngine {
         }
     }
 
-    private fun applyResult(
+    private suspend fun applyResult(
         result: BridgeClient.SendResult,
         deliveryId: String,
         fingerprint: String,

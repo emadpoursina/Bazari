@@ -1,0 +1,14 @@
+{
+  "name": "blue unrecognized → failure retained as parse_error (sanitized reason, never raw text)",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "com.samanpr.blu",
+    "title": "بلو",
+    "text": "پیام تبلیغاتی بدون مبلغ تراکنش",
+    "postedAt": "2026-09-24T21:00:00+03:30"
+  },
+  "expectedFailure": {
+    "reason_contains": "unrecognized blue notification type",
+    "confidence": "MEDIUM"
+  }
+}

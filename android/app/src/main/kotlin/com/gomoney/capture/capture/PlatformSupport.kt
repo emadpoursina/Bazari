@@ -6,6 +6,7 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.pm.PackageManager
 import android.service.notification.NotificationListenerService
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import com.gomoney.capture.sync.SyncEngine
 
@@ -14,7 +15,7 @@ class PlatformCapturePermission(private val context: Context) : CaptureGate.Capt
 
     override fun isNotificationListenerAccessGranted(): Boolean {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val enabled = nm.enabledListenerPackages ?: emptySet()
+        val enabled = NotificationManagerCompat.getEnabledListenerPackages(context)
         return context.packageName in enabled
     }
 
@@ -41,7 +42,7 @@ object TransactionSyncHelper {
     /** Current listener access state, for the settings/dashboard screens (FR-024). */
     fun isListenerConfigured(context: Context): Boolean {
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val enabled = nm.enabledListenerPackages ?: emptySet()
+        val enabled = NotificationManagerCompat.getEnabledListenerPackages(context)
         if (context.packageName in enabled) return true
         // Fallback: ask the service component status via NotificationManagerCompat-less check.
         return false

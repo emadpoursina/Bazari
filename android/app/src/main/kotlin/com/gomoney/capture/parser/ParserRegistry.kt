@@ -15,12 +15,13 @@ class ParserRegistry(parsers: List<BankParser>) {
 
     private val ordered: List<BankParser> = parsers
 
-    /** MVP priority order: Mellat, Melli, Saman, SampleBank, Generic last. */
+    /** MVP priority order: Mellat, Melli, Saman, Blue, SampleBank, Generic last. */
     constructor() : this(
         listOf(
             MellatParser(),
             MelliParser(),
             SamanParser(),
+            BlueParser(),
             SampleBankParser(),
             GenericParser(),
         ),

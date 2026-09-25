@@ -5,6 +5,7 @@ import (
 	"time"
 
 	transactionsv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/transactions/v1"
+	gomoneypbv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/v1"
 )
 
 // Source kinds as sent by the Android capture app.
@@ -59,6 +60,24 @@ type NormalizedTransaction struct {
 	Fingerprint   string `json:"fingerprint"`
 }
 
+// GoMoneyAccount contains only the account fields the Android bridge needs for
+// account resolution. It deliberately excludes account names, balances, and
+// other user data returned by ListAccounts.
+type GoMoneyAccount struct {
+	ID        int32
+	Type      gomoneypbv1.AccountType
+	Currency  string
+	IsDefault bool
+}
+
+// GoMoneyCurrency contains the configured exchange-rate data the bridge needs
+// when a bank account and its default counterpart use different currencies.
+type GoMoneyCurrency struct {
+	ID            string
+	Rate          string
+	DecimalPlaces int32
+}
+
 // TxAtTime parses the TxAt field as an ISO-8601 timestamp.
 func (t *NormalizedTransaction) TxAtTime() (time.Time, error) {
 	return time.Parse(time.RFC3339, t.TxAt)
@@ -105,6 +124,9 @@ type ErrorResponse struct {
 // only to this interface; pointing it at a different finance backend means
 // implementing this interface.
 type GoMoneyClient interface {
+	ListAccounts(ctx context.Context) ([]GoMoneyAccount, error)
+	ListCurrencies(ctx context.Context, ids []string) ([]GoMoneyCurrency, error)
+
 	CreateTransaction(
 		ctx context.Context,
 		req *transactionsv1.CreateTransactionRequest,

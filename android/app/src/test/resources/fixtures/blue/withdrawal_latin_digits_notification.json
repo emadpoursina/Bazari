@@ -1,0 +1,19 @@
+{
+  "name": "blue withdrawal — ACTUAL unlabeled shape (no مبلغ label, customer name redacted, balance must NOT become the amount)",
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "com.samanpr.blu",
+    "title": "بلو",
+    "text": "برداشت يول\n<redacted customer name>، 10,000,000 ريال از حساب شما\nيريد.\nموجودى: 10,862,252 ريال\n٢:٣٠\n١٣٠٥.٠٧.٠٣",
+    "postedAt": "2026-09-24T20:31:22+03:30"
+  },
+  "expected": {
+    "bank": "blu",
+    "accountHint": "blue-default",
+    "type": "expense",
+    "amountMinor": 10000000,
+    "currency": "IRR",
+    "description_contains": "Blue withdrawal",
+    "description_equals": "Blue withdrawal"
+  }
+}

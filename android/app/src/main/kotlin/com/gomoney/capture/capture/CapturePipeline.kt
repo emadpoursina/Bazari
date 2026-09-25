@@ -13,6 +13,8 @@ import com.gomoney.capture.storage.NormalizedTransaction
 import com.gomoney.capture.storage.RawEvent
 import com.gomoney.capture.storage.ServerConfiguration
 import com.gomoney.capture.storage.SettingsRepository
+import com.gomoney.capture.storage.eventSource
+import com.gomoney.capture.storage.txType
 import java.util.UUID
 
 /**

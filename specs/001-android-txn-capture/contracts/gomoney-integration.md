@@ -18,10 +18,12 @@ The bridge uses a Go Money **service token** (not user credentials — FR-006 fo
   "transaction": {
     "title": "<description> [<bank>/<accountHint>]",
     "transaction_type": "TRANSACTION_TYPE_EXPENSE" | "TRANSACTION_TYPE_INCOME",
-    "source_account_id": <resolved>,          // expense: the bank account
-    "destination_account_id": <resolved>,     // income target account; expense → counterparty category default
-    "destination_amount": "<amount as decimal string>",
-    "destination_currency": "IRR",
+    "source_account_id": <resolved>,          // expense: bank account; income: default income account
+    "source_amount": "-<amount in source account currency>",
+    "source_currency": "<source account currency>",
+    "destination_account_id": <resolved>,     // expense: default expense account; income: bank account
+    "destination_amount": "<amount in destination account currency as decimal string>",
+    "destination_currency": "<destination account currency>",
     "transaction_date_time": "<txAt ISO-8601>",
     "tag_ids": []                              // no tags in MVP
   }
@@ -29,6 +31,21 @@ The bridge uses a Go Money **service token** (not user credentials — FR-006 fo
 ```
 
 Type mapping: `expense → TRANSACTION_TYPE_EXPENSE`, `income → TRANSACTION_TYPE_INCOME`.
+
+Amounts follow Go Money's double-entry sign convention: source is negative and
+destination is positive. The bridge lists accounts through
+`AccountsService/ListAccounts`, uses the explicitly mapped bank account on the
+bank side, and selects the account marked default for the opposite transaction
+type (`Default Expense` for expense, `Default Income` for income). The mapped
+bank account currency must match the captured transaction currency. If the
+default counterpart uses a different currency, the bridge reads the active rates
+and decimal precision through `CurrencyService/GetCurrencies`, converts the
+counterpart amount using Go Money's configured rates, and rounds to the target
+currency's decimal places. For example, an IRR bank withdrawal can be stored
+against a USD default expense account while preserving the IRR bank leg. Missing
+or invalid rates return HTTP 400 before transaction creation. The converted
+target amount is stored on the transaction, so later rate changes do not change
+that original amount.
 
 ### Account resolution (accountHint → Go Money account id)
 
@@ -38,7 +55,12 @@ The bridge maintains a user-managed mapping file/table `mappings.json`:
 { "mellat|****1234": 1, "saman|****9876": 2 }
 ```
 
-- Exact `(bank, accountHint)` → `source_account_id`.
+- Exact `(bank, accountHint)` → bank-side account ID (source for expenses,
+  destination for income).
+- A missing mapped account, missing default counterpart account, or mapped
+  account currency mismatch returns HTTP 400 `validation` before creating a
+  transaction. A different default-account currency is supported when both
+  currencies have valid configured rates.
 - Unmatched hint → bridge returns HTTP 400 `validation` (`details: ["unmapped account: mellat/****1234"]`) **without calling Go Money**; the app marks the item `SERVER_ERROR`-category... precisely `VALIDATION_ERROR` (not retried until mapping added). The user edits mappings and retries manually.
 - `GET /v1/mappings` + `PUT /v1/mappings` (bearer-token protected, localhost-oriented convenience endpoints) let the user manage mappings without editing the file while the bridge runs. MVP: read/write the JSON file atomically.
 

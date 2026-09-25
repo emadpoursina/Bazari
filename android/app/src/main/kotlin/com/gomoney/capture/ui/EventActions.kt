@@ -1,6 +1,6 @@
 package com.gomoney.capture.ui
 
-import com.gomoney.capture.capture.SyncEngine
+import com.gomoney.capture.sync.SyncEngine
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.DeliveryRepository
 import com.gomoney.capture.storage.MaintenanceRepository

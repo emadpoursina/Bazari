@@ -99,7 +99,7 @@ class CapturePipelineTest {
 
         val outcome = pipeline.process(rawEvent())
 
-        assertEquals(CapturePipeline.Outcome.QUEUED, outcome)
+        assertEquals(Outcome.QUEUED, outcome)
         assertEquals(1, db.normalizedTransactionDao().count())
         // The outbox row is queued for delivery.
         assertEquals(1, db.deliveryRecordDao().pendingForDelivery().size)
@@ -111,7 +111,7 @@ class CapturePipelineTest {
         configure(packages = setOf("ir.mellat.mellatab"))
         val outcome = pipeline().process(rawEvent(pkg = "com.random.app"))
 
-        assertEquals(CapturePipeline.Outcome.IGNORED_NOT_ALLOW_LISTED, outcome)
+        assertEquals(Outcome.IGNORED_NOT_ALLOW_LISTED, outcome)
         assertEquals(0, db.normalizedTransactionDao().count())
     }
 
@@ -121,7 +121,7 @@ class CapturePipelineTest {
         configure(notificationEnabled = false)
         val outcome = pipeline().process(rawEvent())
 
-        assertEquals(CapturePipeline.Outcome.IGNORED_DISABLED, outcome)
+        assertEquals(Outcome.IGNORED_DISABLED, outcome)
         assertEquals(0, db.normalizedTransactionDao().count())
     }
 
@@ -131,7 +131,7 @@ class CapturePipelineTest {
         configure()
         val outcome = pipeline().process(rawEvent(text = "سلام، این یک پیام بی‌ربط است"))
 
-        assertEquals(CapturePipeline.Outcome.RETAINED_PARSE_ERROR, outcome)
+        assertEquals(Outcome.RETAINED_PARSE_ERROR, outcome)
         val record = db.deliveryRecordDao().byId(rawEvent().id)
         assertEquals(DeliveryState.PARSED.name.lowercase(), record?.state)
         assertEquals("parse_error", record?.errorCategory)
@@ -145,7 +145,7 @@ class CapturePipelineTest {
         val event = rawEvent()
 
         val first = pipeline.process(event)
-        assertEquals(CapturePipeline.Outcome.QUEUED, first)
+        assertEquals(Outcome.QUEUED, first)
 
         // A second identical capture (same bank/type/amount/description but a
         // different raw event id/timestamps) — exact fingerprint dedup.
@@ -153,7 +153,7 @@ class CapturePipelineTest {
         val second = pipeline.process(secondEvent)
 
         assertEquals(
-            CapturePipeline.Outcome.DUPLICATE_SHORT_CIRCUITED,
+            Outcome.DUPLICATE_SHORT_CIRCUITED,
             second,
         )
         assertEquals(1, db.normalizedTransactionDao().count())

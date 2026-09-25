@@ -70,6 +70,7 @@ dependencies {
     // FR-027: no analytics / ads / third-party tracking SDKs.
 
     testImplementation(libs.junit)
+    testImplementation(libs.androidx.test.core)
     testImplementation(libs.androidx.room.testing)
     testImplementation(libs.androidx.work.testing)
     testImplementation(libs.kotlinx.coroutines.test)

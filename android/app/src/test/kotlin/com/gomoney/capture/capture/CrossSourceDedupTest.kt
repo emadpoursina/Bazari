@@ -10,6 +10,7 @@ import com.gomoney.capture.storage.DedupRepository
 import com.gomoney.capture.storage.DeliveryRepository
 import com.gomoney.capture.storage.RawEvent
 import com.gomoney.capture.storage.SettingsRepository
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -97,9 +98,9 @@ class CrossSourceDedupTest {
         val first = pipeline.process(notification)
         val second = pipeline.process(sms)
 
-        assertEquals(CapturePipeline.Outcome.QUEUED, first)
+        assertEquals(Outcome.QUEUED, first)
         // Identical fingerprint (same round(ts), same bank/account/type/amount/description).
-        assertEquals(CapturePipeline.Outcome.DUPLICATE_SHORT_CIRCUITED, second)
+        assertEquals(Outcome.DUPLICATE_SHORT_CIRCUITED, second)
         assertEquals(1, db.normalizedTransactionDao().count())
     }
 
@@ -115,14 +116,14 @@ class CrossSourceDedupTest {
         val first = pipeline.process(notification)
         val second = pipeline.process(sms)
 
-        assertEquals(CapturePipeline.Outcome.QUEUED, first)
-        assertEquals(CapturePipeline.Outcome.QUEUED, second)
+        assertEquals(Outcome.QUEUED, first)
+        assertEquals(Outcome.QUEUED, second)
         assertEquals(2, db.normalizedTransactionDao().count())
 
         // The two rows differ only in the minute-rounded fingerprint component;
         // the bridge's ±2-min window scan (adjacent buckets) collapses them —
         // exactly one Go Money transaction (FR-030, verified in Go tests).
-        val parsed = kotlinx.coroutines.flow.first(db.normalizedTransactionDao().observeRecent(10))
+        val parsed = db.normalizedTransactionDao().observeRecent(10).first()
         val fingerprints = parsed.map { it.fingerprint }
         assertEquals(2, fingerprints.distinct().size)
         fingerprints.forEach { fp ->
@@ -138,7 +139,7 @@ class CrossSourceDedupTest {
         val sms = rawEvent("evt-sms-off", "sms", "MELLAT", "2026-09-23T20:31:22+03:30")
 
         val outcome = pipeline.process(sms)
-        assertEquals(CapturePipeline.Outcome.IGNORED_DISABLED, outcome)
+        assertEquals(Outcome.IGNORED_DISABLED, outcome)
         assertEquals(0, db.normalizedTransactionDao().count())
     }
 }

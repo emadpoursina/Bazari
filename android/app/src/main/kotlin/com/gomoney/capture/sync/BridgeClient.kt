@@ -4,6 +4,8 @@ import com.gomoney.capture.model.ErrorCategory
 import com.gomoney.capture.storage.NormalizedTransaction
 import com.gomoney.capture.storage.ServerConfiguration
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -64,15 +66,17 @@ class BridgeClient(
 
     suspend fun ping(config: ServerConfiguration): PingResult {
         val request = buildRequest(config, "POST", "/v1/ping", body("{}"))
-        return runCatching {
-            okHttp.newCall(request).execute().use { res ->
-                when {
-                    res.code == 401 -> PingResult(false, false, unauthorized = true)
-                    res.isSuccessful -> PingResult(true, parsePing(res), false)
-                    else -> PingResult(false, false, false)
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                okHttp.newCall(request).execute().use { res ->
+                    when {
+                        res.code == 401 -> PingResult(false, false, unauthorized = true)
+                        res.isSuccessful -> PingResult(true, parsePing(res), false)
+                        else -> PingResult(false, false, false)
+                    }
                 }
-            }
-        }.getOrElse { PingResult(false, false, false) }
+            }.getOrElse { PingResult(false, false, false) }
+        }
     }
 
     /** Send one normalized transaction; never throws (network → network_error). */
@@ -148,7 +152,9 @@ class BridgeClient(
         return runCatching {
             val json = JSONObject(body)
             val error = json.optString("error", "validation")
-            val details = json.optJSONArray("details")?.joinToString("; ") ?: ""
+            val details = json.optJSONArray("details")
+                ?.let { arr -> (0 until arr.length()).joinToString("; ") { arr.optString(it) } }
+                ?: ""
             "$error $details".trim()
         }.getOrDefault("validation")
     }

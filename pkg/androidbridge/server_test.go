@@ -21,11 +21,15 @@ import (
 // fakeGoMoneyClient is a hand-written fake of the GoMoneyClient interface
 // (injection point per FR-013).
 type fakeGoMoneyClient struct {
-	createErr   error
-	pingErr     error
-	created     []*transactionsv1.CreateTransactionRequest
-	nextTxnId   int64
-	failConnect bool // return a connect Unavailable error
+	createErr     error
+	pingErr       error
+	accountsErr   error
+	currenciesErr error
+	accounts      []GoMoneyAccount
+	currencies    []GoMoneyCurrency
+	created       []*transactionsv1.CreateTransactionRequest
+	nextTxnId     int64
+	failConnect   bool // return a connect Unavailable error
 }
 
 func (f *fakeGoMoneyClient) CreateTransaction(
@@ -44,6 +48,33 @@ func (f *fakeGoMoneyClient) CreateTransaction(
 
 func (f *fakeGoMoneyClient) Ping(ctx context.Context) error {
 	return f.pingErr
+}
+
+func (f *fakeGoMoneyClient) ListAccounts(ctx context.Context) ([]GoMoneyAccount, error) {
+	if f.accountsErr != nil {
+		return nil, f.accountsErr
+	}
+	if f.accounts != nil {
+		return f.accounts, nil
+	}
+	return []GoMoneyAccount{
+		{ID: 1, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, Currency: "IRR"},
+		{ID: 2, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, Currency: "IRR", IsDefault: true},
+		{ID: 3, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_INCOME, Currency: "IRR", IsDefault: true},
+	}, nil
+}
+
+func (f *fakeGoMoneyClient) ListCurrencies(ctx context.Context, ids []string) ([]GoMoneyCurrency, error) {
+	if f.currenciesErr != nil {
+		return nil, f.currenciesErr
+	}
+	if f.currencies != nil {
+		return f.currencies, nil
+	}
+	return []GoMoneyCurrency{
+		{ID: "IRR", Rate: "230000.0", DecimalPlaces: 1},
+		{ID: "USD", Rate: "1.00", DecimalPlaces: 2},
+	}, nil
 }
 
 // newTestServer spins up an httptest server with the full bridge surface.
@@ -138,8 +169,96 @@ func TestCreateCreated(t *testing.T) {
 	created := client.created[0]
 	require.Equal(t, "Card purchase [mellat/****1234]", created.Title)
 	require.NotNil(t, created.GetExpense())
-	require.Equal(t, "500000", created.GetExpense().SourceAmount)
+	require.Equal(t, "-500000", created.GetExpense().SourceAmount)
 	require.Equal(t, "IRR", created.GetExpense().SourceCurrency)
+	require.Equal(t, int32(1), created.GetExpense().SourceAccountId)
+	require.Equal(t, "500000", created.GetExpense().DestinationAmount)
+	require.Equal(t, "IRR", created.GetExpense().DestinationCurrency)
+	require.Equal(t, int32(2), created.GetExpense().DestinationAccountId)
+}
+
+func TestCreateIncomeUsesDefaultIncomeAndMappedBankAccount(t *testing.T) {
+	client := &fakeGoMoneyClient{}
+	_, ts := newTestServer(t, client)
+
+	txn := validTxn(fingerprintHex(11))
+	txn.Type = TypeIncome
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Len(t, client.created, 1)
+	income := client.created[0].GetIncome()
+	require.NotNil(t, income)
+	require.Equal(t, "-500000", income.SourceAmount)
+	require.Equal(t, int32(3), income.SourceAccountId)
+	require.Equal(t, "500000", income.DestinationAmount)
+	require.Equal(t, int32(1), income.DestinationAccountId)
+}
+
+func TestCreateExpenseConvertsCounterpartToDefaultCurrency(t *testing.T) {
+	client := &fakeGoMoneyClient{accounts: []GoMoneyAccount{
+		{ID: 1, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, Currency: "IRR"},
+		{ID: 2, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, Currency: "USD", IsDefault: true},
+		{ID: 3, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_INCOME, Currency: "USD", IsDefault: true},
+	}}
+	_, ts := newTestServer(t, client)
+
+	txn := validTxn(fingerprintHex(12))
+	txn.Amount = 10_000_000
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Len(t, client.created, 1)
+	expense := client.created[0].GetExpense()
+	require.NotNil(t, expense)
+	require.Equal(t, "-10000000", expense.SourceAmount)
+	require.Equal(t, "IRR", expense.SourceCurrency)
+	require.Equal(t, int32(1), expense.SourceAccountId)
+	require.Equal(t, "43.48", expense.DestinationAmount)
+	require.Equal(t, "USD", expense.DestinationCurrency)
+	require.Equal(t, int32(2), expense.DestinationAccountId)
+}
+
+func TestCreateIncomeConvertsDefaultSourceToDefaultCurrency(t *testing.T) {
+	client := &fakeGoMoneyClient{accounts: []GoMoneyAccount{
+		{ID: 1, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, Currency: "IRR"},
+		{ID: 2, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, Currency: "USD", IsDefault: true},
+		{ID: 3, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_INCOME, Currency: "USD", IsDefault: true},
+	}}
+	_, ts := newTestServer(t, client)
+
+	txn := validTxn(fingerprintHex(13))
+	txn.Type = TypeIncome
+	txn.Amount = 10_000_000
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Len(t, client.created, 1)
+	income := client.created[0].GetIncome()
+	require.NotNil(t, income)
+	require.Equal(t, "-43.48", income.SourceAmount)
+	require.Equal(t, "USD", income.SourceCurrency)
+	require.Equal(t, int32(3), income.SourceAccountId)
+	require.Equal(t, "10000000", income.DestinationAmount)
+	require.Equal(t, "IRR", income.DestinationCurrency)
+	require.Equal(t, int32(1), income.DestinationAccountId)
+}
+
+func TestCreateCrossCurrencyRejectsMissingRate(t *testing.T) {
+	client := &fakeGoMoneyClient{
+		accounts: []GoMoneyAccount{
+			{ID: 1, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, Currency: "IRR"},
+			{ID: 2, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, Currency: "USD", IsDefault: true},
+		},
+		currencies: []GoMoneyCurrency{{ID: "IRR", Rate: "230000.0", DecimalPlaces: 1}},
+	}
+	_, ts := newTestServer(t, client)
+
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, validTxn(fingerprintHex(14))))
+
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+	require.Contains(t, readBody(t, res), "Go Money currency rate is missing for USD")
+	require.Empty(t, client.created)
 }
 
 func TestCreateDuplicateExactFingerprint(t *testing.T) {

@@ -5,6 +5,9 @@ import android.content.Context
 import android.content.Intent
 import android.telephony.SmsMessage
 import com.gomoney.capture.storage.AppDatabase
+import com.gomoney.capture.storage.DedupRepository
+import com.gomoney.capture.storage.DeliveryRepository
+import com.gomoney.capture.storage.RawEvent
 import com.gomoney.capture.storage.SettingsRepository
 import java.time.OffsetDateTime
 import java.util.UUID
@@ -60,7 +63,7 @@ class SmsCaptureReceiver : BroadcastReceiver() {
                     )
                 }
             } finally {
-                go()
+                go.finish()
             }
         }
     }

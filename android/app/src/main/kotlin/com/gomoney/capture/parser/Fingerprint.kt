@@ -60,9 +60,10 @@ object Fingerprint {
     }
 
     fun toEpochSecond(txAt: String): Long {
-        val parsed = runCatching { OffsetDateTime.parse(txAt) }
-            .getOrElse { Instant.parse(txAt) }
-        return parsed.toInstant().atOffset(ZoneOffset.UTC).toEpochSecond()
+        val asOffset = runCatching { OffsetDateTime.parse(txAt) }.getOrNull()
+        if (asOffset != null) return asOffset.toInstant().atOffset(ZoneOffset.UTC).toEpochSecond()
+        val asInstant = Instant.parse(txAt)
+        return asInstant.atOffset(ZoneOffset.UTC).toEpochSecond()
     }
 
     fun sha256Hex(input: String): String {

@@ -8,7 +8,7 @@
     "postedAt": "2026-09-23T12:00:00+03:30"
   },
   "expectedFailure": {
-    "reason_contains": "unrecognized mellat message type",
+    "reason_contains": "no amount or card hint recognized",
     "confidence": "MEDIUM"
   }
 }

@@ -34,7 +34,8 @@ Generate a token for the app: `openssl rand -hex 32`.
 
 ## 3. Mappings file
 
-`mappings.json` maps `(bank, masked card hint)` → Go Money `source_account_id`:
+`mappings.json` maps `(bank, account hint)` → Go Money bank-side account ID
+(source for expenses, destination for income):
 
 ```json
 { "mellat|****1234": 1, "saman|****9876": 2 }
@@ -47,6 +48,12 @@ Manage it live without restarting the bridge:
 
 Unmapped account → the bridge answers `400 validation: unmapped account`
 WITHOUT calling Go Money; add the mapping and retry manually.
+
+The mapped bank account's currency must match the captured transaction currency
+(currently IRR). A default expense/income account may use another currency; the
+bridge converts that counterpart using the active Go Money currency rates and
+target precision at delivery time. For an IRR bank account with a USD default
+expense, make sure both IRR and USD have valid configured rates in Go Money.
 
 ## 4. LAN notes
 

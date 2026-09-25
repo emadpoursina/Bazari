@@ -21,6 +21,7 @@ import com.gomoney.capture.capture.PlatformCapturePermission
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.ServerConfiguration
 import com.gomoney.capture.storage.SettingsRepository
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
@@ -49,12 +50,15 @@ class DashboardViewModel(
 
     enum class ConnectionStatus { CONNECTED, GO_MONEY_DOWN, DISCONNECTED, UNKNOWN }
 
+    private val connection = MutableStateFlow(ConnectionStatus.UNKNOWN)
+
     val state: StateFlow<DashboardState> =
         kotlinx.coroutines.flow.combine(
             db.normalizedTransactionDao().observeRecent(500),
             db.deliveryRecordDao().observePending(),
             settings.observe(),
-        ) { txs, pendingRows, config ->
+            connection,
+        ) { txs, pendingRows, config, connection ->
             DashboardState(
                 capturedToday = txs.count { it.txAt.startsWith(today()) }.toLong(),
                 pending = pendingRows.size.toLong(),
@@ -62,25 +66,30 @@ class DashboardViewModel(
                     pendingRows.none { it.id == tx.id }
                 }.toLong(),
                 failed = pendingRows.count { it.state == "failed" }.toLong(),
+                connection = connection,
                 config = config,
             )
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardState())
 
-    fun refreshConnection(onResult: (ConnectionStatus) -> Unit) {
+    /**
+     * BridgePing-driven connection test (FR-019): updates the observed state
+     * so the dashboard reflects connected/offline/error status.
+     */
+    fun refreshConnection() {
         viewModelScope.launch {
             val config = settings.current()
             if (config.serverUrl.isBlank()) {
-                onResult(ConnectionStatus.DISCONNECTED)
+                connection.value = ConnectionStatus.DISCONNECTED
                 return@launch
             }
             val ping = BridgePing().ping(config)
-            onResult(
-                when {
-                    ping.unauthorized -> ConnectionStatus.DISCONNECTED
-                    ping.ok && ping.gomoneyReachable -> ConnectionStatus.CONNECTED
-                    else -> ConnectionStatus.GO_MONEY_DOWN
-                },
-            )
+            connection.value = when {
+                // Unauthorized OR unreachable bridge → offline (GO_MONEY_DOWN
+                // only applies when the bridge answered but Go Money didn't).
+                ping.unauthorized || !ping.ok -> ConnectionStatus.DISCONNECTED
+                ping.gomoneyReachable -> ConnectionStatus.CONNECTED
+                else -> ConnectionStatus.GO_MONEY_DOWN
+            }
         }
     }
 

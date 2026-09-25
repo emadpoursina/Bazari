@@ -75,7 +75,7 @@ class FingerprintTest {
         // Same instant expressed in two offsets → same epoch second.
         assertEquals(
             Fingerprint.toEpochSecond("2026-09-23T20:31:22+03:30"),
-            Fingerprint.toEpochSecond("2026-09-23T17:01:22+00:30"),
+            Fingerprint.toEpochSecond("2026-09-23T21:01:22+04:00"),
         )
     }
 }

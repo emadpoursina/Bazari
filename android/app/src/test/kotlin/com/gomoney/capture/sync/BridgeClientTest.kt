@@ -11,8 +11,13 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /** BridgeClient response mapping tests (T024, FR-014) with MockWebServer. */
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
 class BridgeClientTest {
 
     private lateinit var server: MockWebServer
@@ -130,6 +135,34 @@ class BridgeClientTest {
 
         server.enqueue(MockResponse().setResponseCode(401).setBody("""{"error":"unauthorized"}"""))
         assertEquals(true, BridgeClient().ping(config).unauthorized)
+    }
+
+    /** HTTP failure (e.g. 502) on ping → offline, NOT unauthorized (dashboard
+     *  must show DISCONNECTED, not GO_MONEY_DOWN). */
+    @Test
+    fun `ping http failure maps to offline not unauthorized`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(502).setBody("bad gateway"))
+
+        val result = BridgeClient().ping(config)
+
+        assertEquals(false, result.ok)
+        assertEquals(false, result.unauthorized)
+        assertEquals(false, result.gomoneyReachable)
+    }
+
+    /** Network failure (connection refused) → offline, not unauthorized. */
+    @Test
+    fun `ping network failure maps to offline not unauthorized`() = runTest {
+        val deadServer = MockWebServer()
+        val deadUrl = deadServer.url("/").toString().removeSuffix("/")
+        deadServer.shutdown()
+        val deadConfig = config.copy(serverUrl = deadUrl)
+
+        val result = BridgeClient().ping(deadConfig)
+
+        assertEquals(false, result.ok)
+        assertEquals(false, result.unauthorized)
+        assertEquals(false, result.gomoneyReachable)
     }
 
     /** Payload never contains raw text (rawTextRef omitted — FR-028). */

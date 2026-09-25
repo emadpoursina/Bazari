@@ -39,9 +39,7 @@ class SettingsRepository(
     private val prefs: SharedPreferences by lazy { prefsProvider() }
 
     private val dataStore: DataStore<Preferences> =
-        PreferenceDataStoreFactory.create {
-            context.preferencesDataStoreFile("server_config")
-        }
+        SettingsRepository.dataStoreFor(context)
 
     private val serverUrlKey = stringPreferencesKey("server_url")
     private val notificationKey = booleanPreferencesKey("notification_capture_enabled")
@@ -83,6 +81,19 @@ class SettingsRepository(
     }
 
     companion object {
+        // One DataStore instance per backing file (process-wide): creating a
+        // new DataStore for the same file from a second SettingsRepository
+        // instance throws "multiple DataStores active for the same file".
+        private val dataStores = mutableMapOf<String, DataStore<Preferences>>()
+
+        @Synchronized
+        fun dataStoreFor(context: Context): DataStore<Preferences> {
+            val file = context.applicationContext.preferencesDataStoreFile("server_config")
+            return dataStores.getOrPut(file.toString()) {
+                PreferenceDataStoreFactory.create { file }
+            }
+        }
+
         fun defaultEncryptedPrefs(context: Context): SharedPreferences {
             val masterKey = MasterKey.Builder(context)
                 .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -92,7 +103,7 @@ class SettingsRepository(
                 "gomoney_capture_secure",
                 masterKey,
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-                EncryptedSharedPreferences.EncryptedSharedPreferencesScheme.AES256_GCM,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
             )
         }
     }

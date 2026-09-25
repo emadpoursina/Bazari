@@ -11,7 +11,9 @@ import (
 	"time"
 
 	transactionsv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/transactions/v1"
+	gomoneypbv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/v1"
 	"connectrpc.com/connect"
+	"github.com/shopspring/decimal"
 )
 
 const bulkMaxItems = 50
@@ -85,8 +87,8 @@ func (s *Server) handleBulk(w http.ResponseWriter, r *http.Request) {
 }
 
 // deliver is the single delivery path (contracts/bridge-http-api.md):
-// validate → mapping resolve → dedup lookup (exact then ±2-min window) →
-// reserve → Go Money create → commit; rolled back on Go Money failure.
+// validate → mapping/account resolve → dedup lookup (exact then ±2-min window)
+// → reserve → Go Money create → commit; rolled back on Go Money failure.
 // Returns (httpStatus, responseBody).
 func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, any) {
 	start := s.now()
@@ -97,7 +99,8 @@ func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, 
 
 	// Account mapping must resolve BEFORE any Go Money call
 	// (contracts/gomoney-integration.md — unmatched → 400 without calling).
-	if _, ok := s.mappings.Resolve(txn.Bank, txn.AccountHint); !ok {
+	mappedAccountID, ok := s.mappings.Resolve(txn.Bank, txn.AccountHint)
+	if !ok {
 		return http.StatusBadRequest, ErrorResponse{
 			Error:   WireValidationError,
 			Details: []string{fmt.Sprintf("unmapped account: %s/%s", txn.Bank, txn.AccountHint)},
@@ -137,6 +140,61 @@ func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, 
 		}
 	}
 
+	accountLookupStart := s.now()
+	accounts, err := s.client.ListAccounts(ctx)
+	accountLookupLatency := s.now().Sub(accountLookupStart)
+	if err != nil {
+		s.log.Operation("gomoney.accounts.list", txn.Fingerprint, "error", accountLookupLatency)
+		return classifyGoMoneyError(err)
+	}
+
+	mappedAccount, ok := findGoMoneyAccount(accounts, mappedAccountID)
+	if !ok {
+		return http.StatusBadRequest, ErrorResponse{
+			Error:   WireValidationError,
+			Details: []string{"mapped Go Money account was not found"},
+		}
+	}
+	if mappedAccount.Currency != txn.Currency {
+		return http.StatusBadRequest, ErrorResponse{
+			Error:   WireValidationError,
+			Details: []string{"mapped Go Money account currency does not match transaction currency"},
+		}
+	}
+
+	defaultAccountType := gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE
+	defaultAccountName := "expense"
+	if txn.Type == TypeIncome {
+		defaultAccountType = gomoneypbv1.AccountType_ACCOUNT_TYPE_INCOME
+		defaultAccountName = "income"
+	}
+	defaultAccount, ok := findDefaultGoMoneyAccount(accounts, defaultAccountType)
+	if !ok {
+		return http.StatusBadRequest, ErrorResponse{
+			Error:   WireValidationError,
+			Details: []string{fmt.Sprintf("Go Money default %s account was not found", defaultAccountName)},
+		}
+	}
+	// The mapped bank account stays in the captured transaction currency. If
+	// the default expense/income account uses another currency, convert that
+	// counterpart amount using Go Money's configured rates.
+	counterpartAmount := formatIRR(txn.Amount)
+	if defaultAccount.Currency != txn.Currency {
+		currencyLookupStart := s.now()
+		currencies, currencyErr := s.client.ListCurrencies(ctx, []string{txn.Currency, defaultAccount.Currency})
+		currencyLookupLatency := s.now().Sub(currencyLookupStart)
+		if currencyErr != nil {
+			s.log.Operation("gomoney.currencies.list", txn.Fingerprint, "error", currencyLookupLatency)
+			return classifyGoMoneyError(currencyErr)
+		}
+
+		counterpartAmount, err = convertCurrencyAmount(txn.Amount, txn.Currency, defaultAccount.Currency, currencies)
+		if err != nil {
+			return http.StatusBadRequest, ErrorResponse{Error: WireValidationError, Details: []string{err.Error()}}
+		}
+		s.log.Operation("gomoney.currencies.list", txn.Fingerprint, "converted", currencyLookupLatency)
+	}
+
 	// Reserve the fingerprint row before calling Go Money so a concurrent
 	// identical delivery hits the registry instead of double-creating.
 	if err = s.dedup.Reserve(ctx, &DedupEntry{
@@ -153,7 +211,7 @@ func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, 
 		return http.StatusInternalServerError, ErrorResponse{Error: WireGoMoneyError, Details: []string{"dedup reserve failed"}}
 	}
 
-	req, err := s.buildCreateRequest(txn)
+	req, err := s.buildCreateRequest(txn, mappedAccount, defaultAccount, counterpartAmount)
 	if err != nil {
 		_ = s.dedup.Delete(ctx, txn.Fingerprint)
 		return http.StatusBadRequest, ErrorResponse{Error: WireValidationError, Details: []string{err.Error()}}
@@ -210,12 +268,11 @@ func (s *Server) handlePutMappings(w http.ResponseWriter, r *http.Request) {
 // CreateTransactionRequest (contracts/gomoney-integration.md). The type is
 // expressed through the pb oneof (expense/income) —
 // expense → CreateTransactionRequest_Expense, income → _Income.
-func (s *Server) buildCreateRequest(txn *NormalizedTransaction) (*transactionsv1.CreateTransactionRequest, error) {
-	accountID, ok := s.mappings.Resolve(txn.Bank, txn.AccountHint)
-	if !ok {
-		return nil, fmt.Errorf("unmapped account: %s/%s", txn.Bank, txn.AccountHint)
-	}
-
+func (s *Server) buildCreateRequest(
+	txn *NormalizedTransaction,
+	mappedAccount, defaultAccount GoMoneyAccount,
+	counterpartAmount string,
+) (*transactionsv1.CreateTransactionRequest, error) {
 	txAt, err := txn.TxAtTime()
 	if err != nil {
 		return nil, errors.New("txAt is not a valid ISO-8601 timestamp")
@@ -231,31 +288,56 @@ func (s *Server) buildCreateRequest(txn *NormalizedTransaction) (*transactionsv1
 	}
 
 	if txn.Type == TypeExpense {
-		// Expense: source = the mapped bank account; the destination defaults
-		// to Go Money's counterparty category (zero-valued).
+		// Go Money expenses are negative on their source and positive on their
+		// destination. The mapped bank account is the source; Go Money's
+		// default expense account is the destination. The latter may use a
+		// different currency and is converted at the configured Go Money rate.
 		req.Transaction = &transactionsv1.CreateTransactionRequest_Expense{
 			Expense: &transactionsv1.Expense{
-				SourceAmount:        amount,
-				SourceCurrency:      "IRR",
-				SourceAccountId:     accountID,
-				DestinationAmount:   amount,
-				DestinationCurrency: "IRR",
+				SourceAmount:         "-" + amount,
+				SourceCurrency:       mappedAccount.Currency,
+				SourceAccountId:      mappedAccount.ID,
+				DestinationAmount:    counterpartAmount,
+				DestinationCurrency:  defaultAccount.Currency,
+				DestinationAccountId: defaultAccount.ID,
 			},
 		}
 	} else {
-		// Income: destination = the mapped target account.
+		// Income reverses the account roles: Go Money's default income account
+		// is the negative source and the mapped bank account is the positive
+		// destination. Convert the income source to the default account's
+		// currency when it differs from the bank-side transaction currency.
 		req.Transaction = &transactionsv1.CreateTransactionRequest_Income{
 			Income: &transactionsv1.Income{
-				SourceAmount:         amount,
-				SourceCurrency:       "IRR",
+				SourceAmount:         "-" + counterpartAmount,
+				SourceCurrency:       defaultAccount.Currency,
+				SourceAccountId:      defaultAccount.ID,
 				DestinationAmount:    amount,
-				DestinationCurrency:  "IRR",
-				DestinationAccountId: accountID,
+				DestinationCurrency:  mappedAccount.Currency,
+				DestinationAccountId: mappedAccount.ID,
 			},
 		}
 	}
 
 	return req, nil
+}
+
+func findGoMoneyAccount(accounts []GoMoneyAccount, id int32) (GoMoneyAccount, bool) {
+	for _, account := range accounts {
+		if account.ID == id {
+			return account, true
+		}
+	}
+	return GoMoneyAccount{}, false
+}
+
+func findDefaultGoMoneyAccount(accounts []GoMoneyAccount, typ gomoneypbv1.AccountType) (GoMoneyAccount, bool) {
+	for _, account := range accounts {
+		if account.Type == typ && account.IsDefault {
+			return account, true
+		}
+	}
+	return GoMoneyAccount{}, false
 }
 
 // normalizeDesc applies the shared description normalization used by both the
@@ -267,6 +349,52 @@ func normalizeDesc(description string) string {
 // formatIRR renders an IRR amount as a decimal string.
 func formatIRR(amount int64) string {
 	return fmt.Sprintf("%d", amount)
+}
+
+// convertCurrencyAmount converts a positive captured amount using Go Money's
+// convention: rate = units of currency per one base-currency unit. The result
+// is rounded to the destination currency's configured precision, except when
+// rounding a small positive amount would produce zero.
+func convertCurrencyAmount(amount int64, fromCurrency, toCurrency string, currencies []GoMoneyCurrency) (string, error) {
+	if amount <= 0 {
+		return "", errors.New("amount must be > 0 for currency conversion")
+	}
+	if fromCurrency == toCurrency {
+		return formatIRR(amount), nil
+	}
+
+	byID := make(map[string]GoMoneyCurrency, len(currencies))
+	for _, currency := range currencies {
+		byID[currency.ID] = currency
+	}
+
+	from, ok := byID[fromCurrency]
+	if !ok {
+		return "", fmt.Errorf("Go Money currency rate is missing for %s", fromCurrency)
+	}
+	to, ok := byID[toCurrency]
+	if !ok {
+		return "", fmt.Errorf("Go Money currency rate is missing for %s", toCurrency)
+	}
+	if to.DecimalPlaces < 0 {
+		return "", fmt.Errorf("Go Money currency precision is invalid for %s", toCurrency)
+	}
+
+	fromRate, err := decimal.NewFromString(from.Rate)
+	if err != nil || !fromRate.IsPositive() {
+		return "", fmt.Errorf("Go Money currency rate is invalid for %s", fromCurrency)
+	}
+	toRate, err := decimal.NewFromString(to.Rate)
+	if err != nil || !toRate.IsPositive() {
+		return "", fmt.Errorf("Go Money currency rate is invalid for %s", toCurrency)
+	}
+
+	converted := decimal.NewFromInt(amount).Div(fromRate).Mul(toRate)
+	rounded := converted.Round(to.DecimalPlaces)
+	if rounded.IsZero() && converted.IsPositive() {
+		return converted.String(), nil
+	}
+	return rounded.StringFixed(to.DecimalPlaces), nil
 }
 
 // classifyGoMoneyError maps a Go Money failure to the contract's 502/500 pair.

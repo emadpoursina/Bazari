@@ -1,5 +1,6 @@
 package com.gomoney.capture.ui
 
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,7 +26,7 @@ import com.gomoney.capture.ui.DashboardViewModel.DashboardState
 @Composable
 fun DashboardScreen(
     state: DashboardState,
-    onRefreshConnection: (DashboardViewModel.ConnectionStatus) -> Unit,
+    onRefreshConnection: () -> Unit,
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -42,15 +43,15 @@ fun DashboardScreen(
             CountCard("Failed", state.failed, Modifier.weight(1f))
         }
 
-        Button(onClick = { onRefreshConnection(DashboardViewModel.ConnectionStatus.UNKNOWN) }) {
+        Button(onClick = onRefreshConnection) {
             Text("Test connection")
         }
         Text(
             text = when (state.connection) {
                 DashboardViewModel.ConnectionStatus.CONNECTED -> "Bridge: connected"
-                DashboardViewModel.ConnectionStatus.GO_MONEY_DOWN -> "Bridge up, Go Money unreachable"
-                DashboardViewModel.ConnectionStatus.DISCONNECTED -> "Bridge not configured/reachable"
-                DashboardViewModel.ConnectionStatus.UNKNOWN -> "Bridge: unknown"
+                DashboardViewModel.ConnectionStatus.GO_MONEY_DOWN -> "Bridge error: up, but Go Money unreachable"
+                DashboardViewModel.ConnectionStatus.DISCONNECTED -> "Bridge offline: not configured/reachable"
+                DashboardViewModel.ConnectionStatus.UNKNOWN -> "Bridge: unknown (not tested)"
             },
             style = MaterialTheme.typography.bodyMedium,
         )

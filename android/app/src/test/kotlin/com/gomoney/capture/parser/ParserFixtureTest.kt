@@ -1,6 +1,5 @@
 package com.gomoney.capture.parser
 
-import com.gomoney.capture.model.Confidence
 import com.gomoney.capture.storage.RawEvent
 import java.io.File
 import org.json.JSONObject
@@ -10,36 +9,32 @@ import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
-import org.junit.runners.Parameterized
+import org.robolectric.RobolectricTestRunner
+import org.robolectric.annotation.Config
 
 /**
- * Fixture-driven parser tests (T013, FR-029): parameterized over ALL fixture
- * JSON files under fixtures/<bank>/. Raw event in → expected
- * NormalizedTransaction out (or sanitized Failure). Verifies parser selection
- * via ParserRegistry, Persian-digit normalization via AmountNormalizer, and
- * the parse-error retention path (US6 scenario 2).
+ * Fixture-driven parser tests (T013, FR-029): iterates ALL fixture JSON files
+ * under fixtures/<bank>/. Raw event in → expected NormalizedTransaction out
+ * (or sanitized Failure). Verifies parser selection via ParserRegistry,
+ * Persian-digit normalization via AmountNormalizer, and the parse-error
+ * retention path (US6 scenario 2). Runs under Robolectric so org.json works
+ * on the JVM.
  */
-@RunWith(Parameterized::class)
-class ParserFixtureTest(
-    private val fixturePath: String,
-    private val fixture: JSONObject,
-) {
-
-    companion object {
-        @JvmStatic
-        @Parameterized.Parameters(name = "{0}")
-        fun fixtures(): Collection<Array<Any>> {
-            val dir = File("src/test/resources/fixtures")
-            return dir.walkTopDown()
-                .filter { it.isFile && it.extension == "json" }
-                .map { it.path.removePrefix("src/test/resources/").removePrefix("fixtures/") to JSONObject(it.readText()) }
-                .toList()
-        }
-    }
+@RunWith(RobolectricTestRunner::class)
+@Config(sdk = [34])
+class ParserFixtureTest {
 
     private val registry = ParserRegistry()
 
-    private fun rawEvent(): RawEvent {
+    private fun fixtures(): List<Pair<String, JSONObject>> {
+        val dir = File("src/test/resources/fixtures")
+        return dir.walkTopDown()
+            .filter { it.isFile && it.extension == "json" }
+            .map { it.path.removePrefix("src/test/resources/").removePrefix("fixtures/") to JSONObject(it.readText()) }
+            .toList()
+    }
+
+    private fun rawEvent(fixture: JSONObject): RawEvent {
         val raw = fixture.getJSONObject("raw")
         return RawEvent(
             id = "fixture-event",
@@ -53,11 +48,10 @@ class ParserFixtureTest(
         )
     }
 
-    @Test
-    fun `fixture parses as expected`() {
-        val event = rawEvent()
+    private fun checkFixture(fixturePath: String, fixture: JSONObject) {
+        val event = rawEvent(fixture)
         val parser = registry.select(event)
-        assertNotNull("registry must select a parser for ${fixturePath}", parser)
+        assertNotNull("registry must select a parser for $fixturePath", parser)
 
         val result = parser!!.parse(event)
 
@@ -78,11 +72,23 @@ class ParserFixtureTest(
             assertEquals(expected.getString("currency"), tx.currency)
             assertEquals(parser.name, tx.parserName)
 
+            val descriptionEquals = expected.optString("description_equals", "")
+            if (descriptionEquals.isNotEmpty()) {
+                assertEquals(
+                    "description must equal the fixed safe constant for $fixturePath",
+                    descriptionEquals,
+                    tx.description,
+                )
+            }
+
             val descriptionContains = expected.optString("description_contains", "")
             if (descriptionContains.isNotEmpty()) {
+                val needle = AmountNormalizer.normalizeDigits(descriptionContains)
+                    .let { AmountNormalizer.normalizeDescription(AmountNormalizer.stripCurrencyWords(it)) }
+                    .take(10)
                 assertTrue(
                     "description '$tx.description' should contain '$descriptionContains'",
-                    tx.description.contains(AmountNormalizer.normalizeDigits(descriptionContains).let { AmountNormalizer.normalizeDescription(AmountNormalizer.stripCurrencyWords(it)) }.take(10)),
+                    AmountNormalizer.normalizeDescription(tx.description).contains(needle),
                 )
             }
         } else if (expectedFailure != null) {
@@ -106,15 +112,26 @@ class ParserFixtureTest(
     }
 
     @Test
+    fun `fixtures parse as expected`() {
+        val all = fixtures()
+        assertTrue("no fixtures found under fixtures/", all.isNotEmpty())
+        for ((fixturePath, fixture) in all) {
+            checkFixture(fixturePath, fixture)
+        }
+    }
+
+    @Test
     fun `unmatched source yields retention not crash`() {
         // US6 scenario 2: an event from a package no parser claims is retained
         // (flagged parse_error by the pipeline) — the registry returns null
         // without throwing.
-        val event = rawEvent().copy(sourcePackage = "com.totally.unknown.app")
-        val parser = registry.select(event)
-        // No parser claims it — pipeline retains + flags; registry returns null.
-        if (parser != null && parser.canParse(event)) {
-            fail("no parser should claim com.totally.unknown.app")
+        for ((fixturePath, fixture) in fixtures()) {
+            val event = rawEvent(fixture).copy(sourcePackage = "com.totally.unknown.app")
+            val parser = registry.select(event)
+            // No parser claims it — pipeline retains + flags; registry returns null.
+            if (parser != null && parser.canParse(event)) {
+                fail("parser ${parser.name} should not claim com.totally.unknown.app ($fixturePath)")
+            }
         }
     }
 }
@@ -138,8 +155,23 @@ class ParserRegistrySelectionTest {
         val selected = registry.select(mellat)
         assertEquals("MellatParser", selected?.name)
 
+        val blu = RawEvent(
+            id = "e-blu",
+            source = "notification",
+            sourcePackage = "com.samanpr.blu",
+            bank = null,
+            title = "بلو",
+            text = "برداشت وجه\nمبلغ ۱۰٬۰۰۰٬۰۰۰ ریال\nموجودی: ۱۰٬۸۶۲٬۲۵۲ ریال",
+            postedAt = "2026-09-24T20:31:22+03:30",
+            capturedAt = "2026-09-24T20:31:22+03:30",
+        )
+        assertEquals("BlueParser", registry.select(blu)?.name)
+
         val order = registry.parsers.map { it.name }
-        assertEquals(listOf("MellatParser", "MelliParser", "SamanParser", "SampleBankParser", "GenericParser"), order)
+        assertEquals(
+            listOf("MellatParser", "MelliParser", "SamanParser", "BlueParser", "SampleBankParser", "GenericParser"),
+            order,
+        )
     }
 
     @Test
