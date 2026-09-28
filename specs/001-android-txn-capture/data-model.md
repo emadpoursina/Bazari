@@ -102,7 +102,7 @@ Registry iterates in priority order; first `canParse=true` wins; if none matches
 
 | Field | Type | Constraints |
 |---|---|---|
-| serverUrl | String | http:// host:port on LAN (e.g. `http://192.168.1.10:8787`) |
+| serverUrl | String | `http://host:port` on a trusted LAN or Tailscale network (e.g. `http://192.168.1.10:8787`) |
 | bearerToken | String | static token; stored in EncryptedSharedPreferences/DataStore encrypted |
 | notificationCaptureEnabled | Boolean | default true |
 | smsCaptureEnabled | Boolean | default false |

@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+private const val TAILSCALE_BRIDGE_URL = "http://100.110.180.85:8788"
+
 /**
  * Settings screen (US4, T039): server URL + bearer token editors (stored
  * encrypted, FR-006), "Test connection" (FR-019) wired to BridgePing,
@@ -60,6 +62,9 @@ class SettingsViewModel(private val settings: SettingsRepository) : ViewModel() 
             if (token.isNotBlank()) settings.setBearerToken(token)
         }
     }
+
+    /** Set the bridge URL to this PC's Tailscale address without changing the token. */
+    fun useTailscaleBridge() = save(TAILSCALE_BRIDGE_URL, "")
 
     /** BridgePing test: connected / offline / error surfaced in the UI. */
     fun testConnection() {
@@ -128,6 +133,16 @@ fun SettingsScreen(
             onValueChange = { viewModel.save(it, "") },
             label = { Text("Bridge URL (http://host:8787)") },
             modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedButton(
+            onClick = { viewModel.useTailscaleBridge() },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Use PC via Tailscale (100.110.180.85:8788)")
+        }
+        Text(
+            text = "Connect this phone and your PC to the same Tailscale network first.",
+            style = MaterialTheme.typography.bodySmall,
         )
         OutlinedTextField(
             value = config.bearerToken,

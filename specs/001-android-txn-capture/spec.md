@@ -237,13 +237,13 @@ The user can add or edit a short note in the Events list after a transaction is 
 - Local storage retention is indefinite for pending/failed events and user-clearable for processed events (industry-practice default; no automatic expiry in MVP).
 - Duplicate detection relies on the deterministic fingerprint of event attributes; near-identical but genuinely distinct transactions (same amount, seconds apart) are assumed rare enough that a timestamp-inclusive fingerprint is an acceptable default.
 - The bridge, not the Android app, is responsible for final deduplication enforcement against Go Money's actual records; the app's fingerprint enables this but Go Money remains the source of truth.
-- Bridge authentication uses a single user-configured static bearer/API token sent with each request; the bridge endpoint runs on plain HTTP because it is reachable only inside the user's trusted home network (no HTTPS certificate/mTLS management in the MVP).
+- Bridge authentication uses a single user-configured static bearer/API token sent with each request; the bridge endpoint runs on plain HTTP on a trusted private LAN or Tailscale network (no HTTPS certificate/mTLS management in the MVP).
 - OCR-based capture, merchant recognition, automatic categorization, and transfer detection are explicitly out of scope for the MVP.
 
 ## Clarifications
 
 ### Session 2026-09-24
 
-- Q: What authentication mechanism should the app use with the local Go Money bridge? → A: Static bearer/API token over plain HTTP, relying on trusted-LAN-only access (matches the PRD example URL http://192.168.1.10:8787); no HTTPS/mTLS in the MVP.
+- Q: What authentication mechanism should the app use with the local Go Money bridge? → A: Static bearer/API token over plain HTTP on a trusted private network, including Tailscale (which encrypts traffic between peers); no HTTPS/mTLS in the MVP.
 - Q: Does the bridge acknowledge transactions back to the app, and does that acknowledgement distinguish "accepted" from "recorded in Go Money"? → A: One HTTP round-trip — the bridge returns success only after Go Money records the transaction; the app has a single "sent" terminal state and no separate CONFIRMED state.
 - Q: What time tolerance should duplicate matching allow across capture sources? → A: ±2 minutes tolerance window on the transaction timestamp.

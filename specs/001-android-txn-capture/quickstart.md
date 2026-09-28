@@ -6,10 +6,10 @@ Run these scenarios after implementation to prove the MVP acceptance criteria (s
 
 ## Prerequisites
 
-- Android phone (SDK 26+) on the same Wi-Fi/LAN as the machine running Go Money. ADB + Android Studio for install and debug mode.
+- Android phone (SDK 26+) and the machine running the bridge on the same private LAN, or connected to the same Tailscale network. ADB + Android Studio for install and debug mode.
 - Go Money instance reachable from the bridge, with a **service token** created (`ConfigurationService.CreateServiceToken`).
 - Bridge config: `GOMONEY_URL`, `GOMONEY_SERVICE_TOKEN`, listen port `:8787`, mapping file for `(bank, accountHint) → accountId`.
-- App config: server URL `http://<lan-ip>:8787`, bearer token, bank app allow-list checked, notification-listener permission granted.
+- App config: server URL `http://<lan-ip>:8787` or the PC's Tailscale URL (for this setup, `http://100.110.180.85:8788`), bearer token, bank app allow-list checked, notification-listener permission granted.
 
 ## Build & Run
 

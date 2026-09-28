@@ -60,13 +60,34 @@ bridge converts that counterpart using the active Go Money currency rates and
 target precision at delivery time. For an IRR bank account with a USD default
 expense, make sure both IRR and USD have valid configured rates in Go Money.
 
-## 4. LAN notes
+## 4. Network access (LAN or Tailscale)
 
-- Plain HTTP by design (clarified Q1=B — trusted home LAN); do **not** expose
-  the bridge to the internet. If your firewall blocks inbound :8787, allow it
-  on the local interface only.
-- The Android app pins the base URL (e.g. `http://192.168.1.10:8787`) + the
-  bearer token (stored encrypted on the phone).
+- The Android app uses the configured bridge URL and bearer token (stored
+  encrypted on the phone). Plain HTTP is intended for a trusted private network;
+  do **not** expose the bridge to the public internet.
+
+### Tailscale
+
+Both the PC running the bridge and the Android phone must be connected to the
+same Tailscale network. For this PC (`100.110.180.85`), set this in
+`.env.android-bridge`:
+
+```dotenv
+BRIDGE_LISTEN=100.110.180.85:8788
+```
+
+This binds the bridge only to the PC's Tailscale address instead of all network
+interfaces. Restart the bridge with `make android-bridge-run`; allow inbound TCP
+port `8788` for Tailscale in the PC firewall if needed. The bridge's default
+`GOMONEY_URL=http://127.0.0.1:8080` can remain unchanged when Go Money runs on
+the same PC.
+
+In Android Settings, tap **Use PC via Tailscale (100.110.180.85:8788)**; the URL is
+`http://100.110.180.85:8788`. Keep the existing bridge bearer token. USB is only
+needed for ADB/install/debugging; sync traffic goes over Tailscale.
+
+Tailscale encrypts traffic between tailnet devices. Keep the bearer token
+configured and do not create a public router port-forward for the bridge.
 
 ## 5. Endpoints
 
