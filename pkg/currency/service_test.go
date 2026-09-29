@@ -187,6 +187,7 @@ func TestCreateCurrency(t *testing.T) {
 		assert.EqualValues(t, "5.21", cur.Rate.String())
 		assert.True(t, cur.IsActive)
 		assert.EqualValues(t, 2, cur.DecimalPlaces)
+		assert.Equal(t, database.CurrencyRateModeManual, *cur.RateMode)
 	})
 
 	t.Run("fail duplicate", func(t *testing.T) {
@@ -218,6 +219,27 @@ func TestCreateCurrency(t *testing.T) {
 		assert.Nil(t, resp)
 	})
 
+	t.Run("base currency is fixed and has no mode", func(t *testing.T) {
+		assert.NoError(t, testingutils.FlushAllTables(cfg.Db))
+
+		srv := currency.NewService(configuration.CurrencyConfig{BaseCurrency: "USD"})
+		resp, err := srv.CreateCurrency(context.TODO(), &currencyv1.CreateCurrencyRequest{
+			Currency: &v1.Currency{
+				Id:            "USD",
+				Rate:          "5.21",
+				IsActive:      true,
+				DecimalPlaces: 2,
+			},
+		})
+		assert.NoError(t, err)
+		assert.NotNil(t, resp)
+
+		var base database.Currency
+		assert.NoError(t, gormDB.Where("id = ?", "USD").First(&base).Error)
+		assert.EqualValues(t, "1", base.Rate.String())
+		assert.Nil(t, base.RateMode)
+	})
+
 	t.Run("fail rate", func(t *testing.T) {
 		assert.NoError(t, testingutils.FlushAllTables(cfg.Db))
 
@@ -245,6 +267,7 @@ func TestUpdateCurrency(t *testing.T) {
 			Rate:          decimal.NewFromInt(2),
 			IsActive:      true,
 			DecimalPlaces: 4,
+			RateMode:      currencyRateModePointer(database.CurrencyRateModeAutomatic),
 		}
 
 		assert.NoError(t, gormDB.Create(cur).Error)
@@ -267,6 +290,33 @@ func TestUpdateCurrency(t *testing.T) {
 		assert.EqualValues(t, "5.21", cur2.Rate.String())
 		assert.False(t, cur2.IsActive)
 		assert.EqualValues(t, 2, cur2.DecimalPlaces)
+		assert.Equal(t, database.CurrencyRateModeManual, *cur2.RateMode)
+	})
+
+	t.Run("unchanged rate preserves automatic mode", func(t *testing.T) {
+		assert.NoError(t, testingutils.FlushAllTables(cfg.Db))
+
+		cur := &database.Currency{
+			ID:            "EUR",
+			Rate:          decimal.RequireFromString("5.21"),
+			IsActive:      true,
+			DecimalPlaces: 2,
+			RateMode:      currencyRateModePointer(database.CurrencyRateModeAutomatic),
+		}
+		assert.NoError(t, gormDB.Create(cur).Error)
+
+		srv := currency.NewService(configuration.CurrencyConfig{})
+		_, err := srv.UpdateCurrency(context.TODO(), &currencyv1.UpdateCurrencyRequest{
+			Id:            "EUR",
+			Rate:          "5.21",
+			IsActive:      false,
+			DecimalPlaces: 2,
+		})
+
+		assert.NoError(t, err)
+		var updated database.Currency
+		assert.NoError(t, gormDB.Where("id = ?", "EUR").First(&updated).Error)
+		assert.Equal(t, database.CurrencyRateModeAutomatic, *updated.RateMode)
 	})
 
 	t.Run("success base currency", func(t *testing.T) {
@@ -301,6 +351,7 @@ func TestUpdateCurrency(t *testing.T) {
 		assert.EqualValues(t, "1", cur2.Rate.String())
 		assert.False(t, cur2.IsActive)
 		assert.EqualValues(t, 2, cur2.DecimalPlaces)
+		assert.Nil(t, cur2.RateMode)
 	})
 
 	t.Run("fail not found", func(t *testing.T) {
@@ -392,4 +443,8 @@ func TestDeleteCurrency(t *testing.T) {
 		assert.ErrorContains(t, err, "record not found")
 		assert.Nil(t, resp)
 	})
+}
+
+func currencyRateModePointer(mode database.CurrencyRateMode) *database.CurrencyRateMode {
+	return &mode
 }

@@ -6,9 +6,17 @@ import (
 	"time"
 )
 
+type CurrencyRateMode string
+
+const (
+	CurrencyRateModeManual    CurrencyRateMode = "manual"
+	CurrencyRateModeAutomatic CurrencyRateMode = "automatic"
+)
+
 type Currency struct {
-	ID   string // Currency ID
-	Rate decimal.Decimal
+	ID       string // Currency ID
+	Rate     decimal.Decimal
+	RateMode *CurrencyRateMode `gorm:"type:text;default:manual"`
 
 	IsActive bool
 

@@ -510,5 +510,19 @@ create unique index if not exists ix_uniq_record on double_entries (transaction_
 				)
 			},
 		},
+		{
+			ID: "2026-09-29-AddCurrencyRateMode",
+			Migrate: func(db *gorm.DB) error {
+				if err := db.Exec(`ALTER TABLE currencies ADD COLUMN IF NOT EXISTS rate_mode text DEFAULT 'manual'`).Error; err != nil {
+					return err
+				}
+
+				if err := db.Exec(`UPDATE currencies SET rate_mode = 'manual' WHERE id <> ?`, cfg.CurrencyConfig.BaseCurrency).Error; err != nil {
+					return err
+				}
+
+				return db.Exec(`UPDATE currencies SET rate = 1, rate_mode = NULL WHERE id = ?`, cfg.CurrencyConfig.BaseCurrency).Error
+			},
+		},
 	}
 }

@@ -83,6 +83,7 @@ func (s *Service) CreateCurrency(
 	currency := &database.Currency{
 		ID:            req.Currency.Id,
 		Rate:          decimal.Decimal{},
+		RateMode:      rateModePointer(database.CurrencyRateModeManual),
 		IsActive:      req.Currency.IsActive,
 		DecimalPlaces: req.Currency.DecimalPlaces,
 		UpdatedAt:     time.Now().UTC(),
@@ -94,8 +95,18 @@ func (s *Service) CreateCurrency(
 	}
 
 	currency.Rate = rate
+	if currency.ID == s.configuration.BaseCurrency {
+		currency.Rate = decimal.NewFromInt(1)
+		currency.RateMode = nil
+	}
 
-	if err = db.Create(currency).Error; err != nil {
+	if currency.ID == s.configuration.BaseCurrency {
+		err = db.Exec(`INSERT INTO currencies (id, rate, rate_mode, is_active, decimal_places, updated_at)
+			VALUES (?, 1, NULL, ?, ?, ?)`, currency.ID, currency.IsActive, currency.DecimalPlaces, currency.UpdatedAt).Error
+	} else {
+		err = db.Create(currency).Error
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -120,6 +131,7 @@ func (s *Service) UpdateCurrency(
 		return nil, err
 	}
 
+	rateChanged := !currency.Rate.Equal(rate)
 	currency.Rate = rate
 	currency.IsActive = req.IsActive
 	currency.DecimalPlaces = req.DecimalPlaces
@@ -130,6 +142,10 @@ func (s *Service) UpdateCurrency(
 
 	if currency.ID == s.configuration.BaseCurrency {
 		currency.Rate = decimal.NewFromInt(1) // always 1
+		currency.RateMode = nil
+	} else if rateChanged {
+		manual := database.CurrencyRateModeManual
+		currency.RateMode = &manual
 	}
 
 	if err = db.Save(&currency).Error; err != nil {
@@ -155,4 +171,15 @@ func (s *Service) mapCurrency(currency *database.Currency) *v1.Currency {
 	}
 
 	return cr
+}
+
+// persistedRateModeToProto is the sole local-to-protobuf translation point.
+// The checked-in generated clients do not yet contain CurrencyRateMode, so
+// both persisted modes map to protobuf's default UNSPECIFIED value (zero).
+func persistedRateModeToProto(_ *database.CurrencyRateMode) int32 {
+	return 0
+}
+
+func rateModePointer(mode database.CurrencyRateMode) *database.CurrencyRateMode {
+	return &mode
 }

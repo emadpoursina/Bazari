@@ -10,7 +10,6 @@ import (
 	"github.com/ft-t/go-money/pkg/database"
 	"github.com/rs/zerolog"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm/clause"
 	"net/http"
 	"time"
 )
@@ -46,6 +45,9 @@ func (s *Syncer) RebaseRates(
 
 	if newBaseRate.IsZero() {
 		return nil, fmt.Errorf("rate for %s is zero", newBase)
+	}
+	if newBaseRate.IsNegative() {
+		return nil, fmt.Errorf("rate for %s must be positive", newBase)
 	}
 
 	rebased := make(map[string]decimal.Decimal)
@@ -114,22 +116,29 @@ func (s *Syncer) Sync(
 	parsed.Rates[s.cfg.BaseCurrency] = decimal.NewFromInt(1)
 
 	for currency, rate := range parsed.Rates {
-		if err = tx.Clauses(clause.OnConflict{
-			OnConstraint: "currencies_pk",
-			DoUpdates: clause.Set{
-				{
-					Column: clause.Column{
-						Name: "rate",
-					},
-					Value: rate,
-				},
-			},
-		}).Create(&database.Currency{
-			ID:            currency,
-			Rate:          rate,
-			DecimalPlaces: configuration.DefaultDecimalPlaces,
-			UpdatedAt:     time.Now().UTC(),
-		}).Error; err != nil {
+		updatedAt := time.Now().UTC()
+		if currency == s.cfg.BaseCurrency {
+			// The base row is an invariant, not a feed-controlled rate mode.
+			// Explicit NULL avoids the database's Manual default on insertion.
+			err = tx.Exec(`INSERT INTO currencies (id, rate, is_active, decimal_places, updated_at, rate_mode)
+				VALUES (?, 1, false, ?, ?, NULL)
+				ON CONFLICT ON CONSTRAINT currencies_pk DO UPDATE
+				SET rate = 1, rate_mode = NULL, updated_at = EXCLUDED.updated_at`,
+				currency, configuration.DefaultDecimalPlaces, updatedAt).Error
+		} else {
+			if !rate.IsPositive() {
+				continue
+			}
+
+			err = tx.Exec(`INSERT INTO currencies (id, rate, is_active, decimal_places, updated_at, rate_mode)
+				VALUES (?, ?, false, ?, ?, ?)
+				ON CONFLICT ON CONSTRAINT currencies_pk DO UPDATE
+				SET rate = EXCLUDED.rate, updated_at = EXCLUDED.updated_at
+				WHERE currencies.rate_mode = ?`,
+				currency, rate, configuration.DefaultDecimalPlaces, updatedAt,
+				database.CurrencyRateModeAutomatic, database.CurrencyRateModeAutomatic).Error
+		}
+		if err != nil {
 			return err
 		}
 	}

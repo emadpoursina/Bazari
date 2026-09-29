@@ -1,3 +1,9 @@
 .git
 frontend
 compose
+node_modules/
+coverage/
+Dockerfile*
+.dockerignore
+*.log*
+.env*
