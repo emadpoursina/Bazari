@@ -210,6 +210,7 @@ else
   fi
 fi
 
+BRIDGE_HOST=""
 BRIDGE_PORT=""
 if $START_BRIDGE; then
   # Load the bridge config now (nothing else is started after this point).
@@ -217,8 +218,16 @@ if $START_BRIDGE; then
   # shellcheck disable=SC1090
   source "$BRIDGE_ENV_FILE"
   set +a
-  BRIDGE_PORT="${BRIDGE_LISTEN:-:8787}"
-  BRIDGE_PORT="${BRIDGE_PORT##*:}"
+  # BRIDGE_LISTEN is a net.Listen address: "host:port", ":port" or "[::]:port".
+  # Probe the host the bridge actually binds to (it may be a LAN/Tailscale IP,
+  # not 127.0.0.1), but map wildcard hosts to loopback for the check.
+  BRIDGE_LISTEN_ADDR="${BRIDGE_LISTEN:-:8787}"
+  BRIDGE_PORT="${BRIDGE_LISTEN_ADDR##*:}"
+  BRIDGE_HOST="${BRIDGE_LISTEN_ADDR%:*}"
+  case "$BRIDGE_HOST" in
+    ""|"0.0.0.0"|"*"|"::"|"[::]") BRIDGE_HOST="127.0.0.1" ;;
+    \[*\]) BRIDGE_HOST="${BRIDGE_HOST#[}"; BRIDGE_HOST="${BRIDGE_HOST%]}" ;;
+  esac
 fi
 
 if ! $START_BRIDGE; then
@@ -228,13 +237,13 @@ elif is_running "$BRIDGE_PID_FILE"; then
   echo ">> android bridge already running (pid $BRIDGE_PID)"
 else
   rm -f "$BRIDGE_PID_FILE"
-  echo ">> starting android-bridge (listen :$BRIDGE_PORT, gomoney ${GOMONEY_URL:-http://127.0.0.1:8080})"
+  echo ">> starting android-bridge (listen ${BRIDGE_HOST}:$BRIDGE_PORT, gomoney ${GOMONEY_URL:-http://127.0.0.1:8080})"
   nohup ./bin/go-money-android-bridge > "$RUN_DIR/bridge.log" 2>&1 &
   BRIDGE_PID=$!
   STARTED_BRIDGE=true
   echo "$BRIDGE_PID" > "$BRIDGE_PID_FILE"
 
-  if ! wait_tcp 127.0.0.1 "$BRIDGE_PORT" "android bridge" 30; then
+  if ! wait_tcp "$BRIDGE_HOST" "$BRIDGE_PORT" "android bridge" 30; then
     tail -n 20 "$RUN_DIR/bridge.log" >&2
     exit 1
   fi
@@ -252,7 +261,7 @@ echo "up:"
 echo "  backend         grpc :$GRPC_PORT, ops :$OPS_HTTP_PORT (log $RUN_DIR/backend.log)"
 echo "  frontend        http://localhost:$FRONTEND_PORT (log $RUN_DIR/frontend.log)"
 if $START_BRIDGE; then
-  echo "  android-bridge  http://127.0.0.1:$BRIDGE_PORT (log $RUN_DIR/bridge.log)"
+  echo "  android-bridge  http://$BRIDGE_HOST:$BRIDGE_PORT (log $RUN_DIR/bridge.log)"
 else
   echo "  android-bridge  skipped"
 fi

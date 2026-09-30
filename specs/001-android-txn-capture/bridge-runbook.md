@@ -69,12 +69,18 @@ expense, make sure both IRR and USD have valid configured rates in Go Money.
 ### Tailscale
 
 Both the PC running the bridge and the Android phone must be connected to the
-same Tailscale network. For this PC (`100.110.180.85`), set this in
+same Tailscale network. For this PC (`100.91.5.122`), set this in
 `.env.android-bridge`:
 
 ```dotenv
-BRIDGE_LISTEN=100.110.180.85:8788
+BRIDGE_LISTEN=100.91.5.122:8788
 ```
+
+Only one Tailscale instance may run on the PC. If the Homebrew `tailscaled`
+daemon is installed alongside the Tailscale.app GUI, both register the same
+machine and install conflicting routes: the phone's traffic is answered
+through the wrong tunnel and times out. Keep the Tailscale.app GUI (the node
+above) and remove the Homebrew one with `brew uninstall tailscale`.
 
 This binds the bridge only to the PC's Tailscale address instead of all network
 interfaces. Restart the bridge with `make android-bridge-run`; allow inbound TCP
@@ -82,9 +88,9 @@ port `8788` for Tailscale in the PC firewall if needed. The bridge's default
 `GOMONEY_URL=http://127.0.0.1:8080` can remain unchanged when Go Money runs on
 the same PC.
 
-In Android Settings, tap **Use PC via Tailscale (100.110.180.85:8788)**; the URL is
-`http://100.110.180.85:8788`. Keep the existing bridge bearer token. USB is only
-needed for ADB/install/debugging; sync traffic goes over Tailscale.
+In Android Settings, enter the bridge URL `http://100.91.5.122:8788` and keep
+the existing bridge bearer token. USB is only needed for
+ADB/install/debugging; sync traffic goes over Tailscale.
 
 Tailscale encrypts traffic between tailnet devices. Keep the bearer token
 configured and do not create a public router port-forward for the bridge.
