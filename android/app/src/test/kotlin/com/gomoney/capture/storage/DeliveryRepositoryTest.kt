@@ -130,4 +130,38 @@ class DeliveryRepositoryTest {
         // QUEUED → SENT skips SENDING — illegal (§3 diagram).
         assertNull(repository.transition(eventId, com.gomoney.capture.model.DeliveryState.SENT))
     }
+
+    // --- 005-account-currency-sources: HELD state (T007/T031) ---
+
+    @Test
+    fun `createHeld parks a currency-less capture`() = runTest {
+        db.rawEventDao().insert(
+            RawEvent(eventId, "notification", "pkg", null, null, "text", "2026-09-23T20:31:22+03:30", "2026-09-23T20:31:22+03:30"),
+        )
+
+        val record = repository.createHeld(id = eventId, sourceEventId = eventId)
+
+        assertEquals("held", record.state)
+        assertEquals(DeliveryState.HELD, record.deliveryStateOf())
+        // Held rows are NOT part of the delivery drain set.
+        assertEquals(0, db.deliveryRecordDao().pendingForDelivery().size)
+    }
+
+    @Test
+    fun `held moves to queued but never directly to sending or sent`() = runTest {
+        db.rawEventDao().insert(
+            RawEvent(eventId, "notification", "pkg", null, null, "text", "2026-09-23T20:31:22+03:30", "2026-09-23T20:31:22+03:30"),
+        )
+        repository.createHeld(id = eventId, sourceEventId = eventId)
+
+        // Direct HELD → SENDING and HELD → SENT are illegal (data-model §6).
+        assertNull(repository.transition(eventId, DeliveryState.SENDING))
+        assertNull(repository.transition(eventId, DeliveryState.SENT))
+
+        // The legal path: HELD → QUEUED (bind-time stamp), then normal drain.
+        val queued = repository.transition(eventId, DeliveryState.QUEUED)
+        assertEquals("queued", queued?.state)
+        assertEquals(DeliveryState.QUEUED, queued?.deliveryStateOf())
+        assertEquals(0, queued?.attempts)
+    }
 }

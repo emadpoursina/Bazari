@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "jobName": "speckit-converge",
+  "runId": "2026-10-01T12-11-35-515Z_1ef501",
+  "runDir": "/Users/emad/Projects/playground/Bazari/.agent/pi/speckit-converge/2026-10-01T12-11-35-515Z_1ef501",
+  "lifecycle": "completed",
+  "exitCode": 0,
+  "signal": null,
+  "summaryExtracted": true,
+  "summary": "FLOW_ID: flow_20261001_005acs\nCONVERGE_OUTCOME: converged\nFINDINGS: none\nFINGERPRINT: none\nPHASE_APPENDED: none\nTASKS_APPENDED: none\nBLOCKER: none\nSUMMARY: Checked 22 FRs, 10 SCs, 17 acceptance scenarios, 8 plan decisions (constitution skipped — unfilled template); gap-type counts missing 0 / partial 0 / contradicts 0 / unrequested 0; tasks.md was NOT written (left byte-for-byte unchanged).\n\nSTATUS: ok\nSUMMARY: All 005 requirements verified implemented — bound-account currency copy, unbound hold with stamp-on-bind, source-only admission with allow-list removal and seeded former-bank sources, pre-delivery currency edit gating, and relaxed bridge currency validation — with matching tests present, so no convergence tasks were appended.\nFiles changed: report.json only (tasks.md unchanged); ✅ Converged — the implementation satisfies the spec, plan, and tasks.",
+  "stopReason": "stop",
+  "errorMessage": null,
+  "stderrTail": null
+}

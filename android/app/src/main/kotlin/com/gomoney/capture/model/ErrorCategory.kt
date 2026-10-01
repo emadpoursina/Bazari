@@ -34,10 +34,16 @@ enum class TxType {
     }
 }
 
-/** Delivery lifecycle states (data-model.md §3) — single terminal success `SENT`. */
+/**
+ * Delivery lifecycle states (data-model.md §3) — single terminal success `SENT`.
+ * `HELD` (005-account-currency-sources): the capture has no currency yet
+ * (unbound/stale/blank-currency source); it is never delivered directly —
+ * the only legal transition out is `held → queued`, stamped at bind time.
+ */
 enum class DeliveryState {
     CAPTURED,
     PARSED,
+    HELD,
     QUEUED,
     SENDING,
     SENT,

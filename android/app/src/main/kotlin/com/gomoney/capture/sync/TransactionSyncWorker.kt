@@ -46,6 +46,14 @@ class TransactionSyncWorker(
 
         SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
 
+        // Periodic maintenance: enforce the parse-error retention cap (FR-028).
+        runCatching {
+            com.gomoney.capture.storage.MaintenanceRepository(
+                rawEventDao = db.rawEventDao(),
+                parseErrorDao = db.parseErrorDao(),
+            ).pruneParseErrors()
+        }
+
         val pendingAfter = dao.pendingForDelivery()
         val banner = SyncBanner.forPending(pendingAfter)
         val sentDelta = (pendingBefore - pendingAfter.size).coerceAtLeast(0)
@@ -122,6 +130,7 @@ object SyncEngine {
         }
 
         syncPendingMemos(bridge, config, txDao)
+        syncPendingAssignments(bridge, config, txDao)
     }
 
     /**
@@ -151,6 +160,7 @@ object SyncEngine {
                 deliveryRepository.transition(tx.id, DeliveryState.SENT)
                 result.gomoneyTxnId?.let { txDao.updateGomoneyTxnId(tx.id, it) }
                 txDao.markMemoSynced(tx.id, tx.userMemo)
+                txDao.markAssignmentSynced(tx.id, tx.destinationAccountId, tx.categoryId)
                 dedupRepository.record(tx.fingerprint, "sent")
             }
             BridgeClient.SendResult.Status.DUPLICATE -> {
@@ -158,6 +168,7 @@ object SyncEngine {
                 deliveryRepository.markDuplicateAcked(tx.id, "bridge duplicate ack")
                 result.gomoneyTxnId?.let { txDao.updateGomoneyTxnId(tx.id, it) }
                 if (tx.memoSyncState != "pending") txDao.markMemoSynced(tx.id, tx.userMemo)
+                txDao.markAssignmentSynced(tx.id, tx.destinationAccountId, tx.categoryId)
                 dedupRepository.record(tx.fingerprint, "duplicate")
             }
             else -> {
@@ -205,6 +216,23 @@ object SyncEngine {
         for (tx in txDao.pendingMemos()) {
             val result = bridge.updateMemo(config, tx)
             if (result.ok) txDao.markMemoSynced(tx.id, tx.userMemo)
+        }
+    }
+
+    /**
+     * Push destination account/category choices made after delivery to the same
+     * Go Money transaction (FR-020, SC-005), mirroring the memo-sync pattern.
+     */
+    private suspend fun syncPendingAssignments(
+        bridge: BridgeClient,
+        config: com.gomoney.capture.storage.ServerConfiguration,
+        txDao: com.gomoney.capture.storage.NormalizedTransactionDao,
+    ) {
+        for (tx in txDao.pendingAssignments()) {
+            val result = bridge.updateAssignment(config, tx)
+            if (result.ok) {
+                txDao.markAssignmentSynced(tx.id, tx.destinationAccountId, tx.categoryId)
+            }
         }
     }
 

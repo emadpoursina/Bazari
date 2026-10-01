@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "jobName": "speckit-ready",
+  "runId": "2026-10-01T10-19-26-998Z_2d27a8",
+  "runDir": "/Users/emad/Projects/playground/Bazari/.agent/pi/speckit-ready/2026-10-01T10-19-26-998Z_2d27a8",
+  "print": false,
+  "lifecycle": "completed",
+  "processAlive": false,
+  "pid": 62436,
+  "lastEventType": "agent_settled",
+  "lastEventAt": "2026-10-01T10:19:29.325Z",
+  "watcherUpdatedAt": "2026-10-01T10:19:29.355Z",
+  "current": null,
+  "currentAgeMs": null,
+  "quietMs": 30,
+  "recent": [],
+  "parseErrors": 0,
+  "lastError": "OpenAI API error (403): {\"code\":\"unsupported_country_region_territory\",\"message\":\"Country, region, or territory not supported\",\"param\":null,\"type\":\"request_forbidden\"}",
+  "sessionId": "01a0f6f9-e486-7e80-9173-a677d8ac4302",
+  "exitCode": 0,
+  "signal": null
+}

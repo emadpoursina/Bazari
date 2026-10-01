@@ -1,4 +1,47 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Go Money Capture</string>
+
+    <!-- Sources tab (notification-engine) -->
+    <string name="sources_tab">Sources</string>
+    <string name="sources_title">Transaction sources</string>
+    <string name="sources_empty">No sources yet. Add one to capture a new sender.</string>
+    <string name="sources_add">Add source</string>
+    <string name="sources_edit">Edit</string>
+    <string name="sources_remove">Remove</string>
+    <string name="sources_enabled">Enabled</string>
+    <string name="sources_disabled">Disabled</string>
+    <string name="sources_unbound">No account bound</string>
+    <string name="sources_binding_stale">Bound account no longer available — choose again</string>
+    <string name="sources_remove_confirm_title">Remove source?</string>
+    <string name="sources_remove_confirm_text">Messages from this source will no longer be captured. Already-captured transactions are kept.</string>
+
+    <!-- Source editor -->
+    <string name="source_editor_add_title">Add source</string>
+    <string name="source_editor_edit_title">Edit source</string>
+    <string name="source_field_name">Name</string>
+    <string name="source_field_identifier">Identifier (package id or SMS sender)</string>
+    <string name="source_field_channel">Channel</string>
+    <string name="source_channel_notification">Notification</string>
+    <string name="source_channel_sms">SMS</string>
+    <string name="source_field_template">Template</string>
+    <string name="source_template_hint">Paste a real message, then mark the amount and direction with {amount} and {direction}.</string>
+    <string name="source_field_income_keywords">Income keywords</string>
+    <string name="source_field_expense_keywords">Expense keywords</string>
+    <string name="source_keywords_hint">Separate words with commas or new lines</string>
+    <string name="source_field_account">Server account (optional)</string>
+    <string name="source_account_unavailable">Account list unavailable — last known list shown</string>
+    <string name="source_account_none">No accounts available</string>
+    <string name="source_test">Test</string>
+    <string name="source_test_sample">Sample message to test</string>
+    <string name="source_test_success">Detected %1$s of %2$d IRR</string>
+    <string name="source_test_failure">Could not parse: %1$s</string>
+    <string name="source_save">Save</string>
+    <string name="source_cancel">Cancel</string>
+    <string name="source_saved">Source saved</string>
+
+    <!-- Parse-error review list -->
+    <string name="parse_errors_title">Unparsed messages</string>
+    <string name="parse_errors_empty">No parse errors.</string>
+    <string name="parse_errors_dismiss">Dismiss</string>
 </resources>

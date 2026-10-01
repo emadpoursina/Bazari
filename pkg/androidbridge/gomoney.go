@@ -5,12 +5,15 @@ import (
 	"errors"
 	"math"
 	"net/http"
+	"strings"
 	"time"
 
 	accountsv1connect "buf.build/gen/go/xskydev/go-money-pb/connectrpc/go/gomoneypb/accounts/v1/accountsv1connect"
+	categoriesv1connect "buf.build/gen/go/xskydev/go-money-pb/connectrpc/go/gomoneypb/categories/v1/categoriesv1connect"
 	currencyv1connect "buf.build/gen/go/xskydev/go-money-pb/connectrpc/go/gomoneypb/currency/v1/currencyv1connect"
 	transactionsv1connect "buf.build/gen/go/xskydev/go-money-pb/connectrpc/go/gomoneypb/transactions/v1/transactionsv1connect"
 	accountsv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/accounts/v1"
+	categoriesv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/categories/v1"
 	currencyv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/currency/v1"
 	transactionsv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/transactions/v1"
 	gomoneypbv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/v1"
@@ -44,9 +47,10 @@ func newProtoTimestamp(t time.Time) *timestamppb.Timestamp {
 // GoMoneyConnectClient implements GoMoneyClient against Go Money's public
 // ConnectRPC API.
 type GoMoneyConnectClient struct {
-	client         transactionsv1connect.TransactionsServiceClient
-	accountsClient accountsv1connect.AccountsServiceClient
-	currencyClient currencyv1connect.CurrencyServiceClient
+	client           transactionsv1connect.TransactionsServiceClient
+	accountsClient   accountsv1connect.AccountsServiceClient
+	categoriesClient categoriesv1connect.CategoriesServiceClient
+	currencyClient   currencyv1connect.CurrencyServiceClient
 }
 
 // NewGoMoneyConnectClient builds the connect-based client for the given Go
@@ -58,15 +62,24 @@ func NewGoMoneyConnectClient(baseURL, token string) *GoMoneyConnectClient {
 	}
 
 	return &GoMoneyConnectClient{
-		client:         transactionsv1connect.NewTransactionsServiceClient(httpClient, baseURL),
-		accountsClient: accountsv1connect.NewAccountsServiceClient(httpClient, baseURL),
-		currencyClient: currencyv1connect.NewCurrencyServiceClient(httpClient, baseURL),
+		client:           transactionsv1connect.NewTransactionsServiceClient(httpClient, baseURL),
+		accountsClient:   accountsv1connect.NewAccountsServiceClient(httpClient, baseURL),
+		categoriesClient: categoriesv1connect.NewCategoriesServiceClient(httpClient, baseURL),
+		currencyClient:   currencyv1connect.NewCurrencyServiceClient(httpClient, baseURL),
 	}
 }
 
+// accountTypeName lowercases the Go Money account type for the selector
+// projection (expense | income | asset | liability | adjustment | unspecified).
+func accountTypeName(t gomoneypbv1.AccountType) string {
+	name := strings.TrimPrefix(t.String(), "ACCOUNT_TYPE_")
+	return strings.ToLower(name)
+}
+
 // ListAccounts returns the minimal account metadata the bridge needs to
-// resolve the mapped bank account and Go Money's default counterpart account.
-// Account names, balances, and other user data are intentionally discarded.
+// resolve the mapped bank account, Go Money's default counterpart account, and
+// the account label/type shown by the app's selectors. Balances, notes, IBANs
+// and every other user data field are intentionally discarded.
 func (c *GoMoneyConnectClient) ListAccounts(ctx context.Context) ([]GoMoneyAccount, error) {
 	res, err := c.accountsClient.ListAccounts(ctx, connect.NewRequest(&accountsv1.ListAccountsRequest{}))
 	if err != nil {
@@ -82,11 +95,34 @@ func (c *GoMoneyConnectClient) ListAccounts(ctx context.Context) ([]GoMoneyAccou
 		accounts = append(accounts, GoMoneyAccount{
 			ID:        account.GetId(),
 			Type:      account.GetType(),
+			TypeName:  accountTypeName(account.GetType()),
+			Label:     account.GetName(),
 			Currency:  account.GetCurrency(),
 			IsDefault: account.GetFlags()&goMoneyDefaultAccountFlag != 0,
 		})
 	}
 	return accounts, nil
+}
+
+// ListCategories returns the minimal category projection (id + label) used by
+// the app's category selector. No other category data is exposed.
+func (c *GoMoneyConnectClient) ListCategories(ctx context.Context) ([]GoMoneyCategory, error) {
+	res, err := c.categoriesClient.ListCategories(ctx, connect.NewRequest(&categoriesv1.ListCategoriesRequest{}))
+	if err != nil {
+		return nil, err
+	}
+
+	categories := make([]GoMoneyCategory, 0, len(res.Msg.GetCategories()))
+	for _, item := range res.Msg.GetCategories() {
+		if item == nil {
+			continue
+		}
+		categories = append(categories, GoMoneyCategory{
+			ID:    item.GetId(),
+			Label: item.GetName(),
+		})
+	}
+	return categories, nil
 }
 
 // ListCurrencies returns configured exchange rates and target precision for

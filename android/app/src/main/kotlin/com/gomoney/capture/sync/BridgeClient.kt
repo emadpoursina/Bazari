@@ -64,6 +64,25 @@ class BridgeClient(
 
     data class MemoUpdateResult(val ok: Boolean, val errorDetail: String?)
 
+    /** Server account summary for the selectors (bridge-api.md GET /v1/accounts). */
+    data class AccountDto(
+        val id: Int,
+        val label: String,
+        val currency: String,
+        val type: String,
+        val isDefault: Boolean,
+    )
+
+    /** Server category summary for the selector (bridge-api.md GET /v1/categories). */
+    data class CategoryDto(val id: Int, val label: String)
+
+    /** Catalog fetch outcome: [ok] false → keep the cache and show unavailable. */
+    data class CatalogResult<T>(
+        val items: List<T>,
+        val ok: Boolean,
+        val unauthorized: Boolean = false,
+    )
+
     // --- public API ---
 
     suspend fun ping(config: ServerConfiguration): PingResult {
@@ -106,6 +125,71 @@ class BridgeClient(
             }
         }.getOrElse {
             transactions.map { SendResult.failure(ErrorCategory.NETWORK_ERROR, "network unreachable") }
+        }
+    }
+
+    /** Fetch server accounts for the selectors (bridge-api.md GET /v1/accounts). */
+    suspend fun fetchAccounts(config: ServerConfiguration): CatalogResult<AccountDto> {
+        val request = buildRequest(config, "GET", "/v1/accounts")
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                okHttp.newCall(request).execute().use { res ->
+                    when {
+                        res.isSuccessful -> CatalogResult(parseAccounts(res), ok = true)
+                        res.code == 401 -> CatalogResult(emptyList(), ok = false, unauthorized = true)
+                        else -> CatalogResult(emptyList(), ok = false)
+                    }
+                }
+            }.getOrElse { CatalogResult(emptyList(), ok = false) }
+        }
+    }
+
+    /** Fetch server categories for the selector (bridge-api.md GET /v1/categories). */
+    suspend fun fetchCategories(config: ServerConfiguration): CatalogResult<CategoryDto> {
+        val request = buildRequest(config, "GET", "/v1/categories")
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                okHttp.newCall(request).execute().use { res ->
+                    when {
+                        res.isSuccessful -> CatalogResult(parseCategories(res), ok = true)
+                        res.code == 401 -> CatalogResult(emptyList(), ok = false, unauthorized = true)
+                        else -> CatalogResult(emptyList(), ok = false)
+                    }
+                }
+            }.getOrElse { CatalogResult(emptyList(), ok = false) }
+        }
+    }
+
+    /**
+     * Push a destination account/category change for an already-recorded
+     * transaction (bridge-api.md PUT /v1/transactions/assignment). Updates the
+     * same Go Money transaction; never creates a second one (FR-020).
+     */
+    suspend fun updateAssignment(config: ServerConfiguration, tx: NormalizedTransaction): MemoUpdateResult {
+        val payload = JSONObject()
+            .put("fingerprint", tx.fingerprint)
+            .put("gomoneyTxnId", tx.gomoneyTxnId)
+            .put("bank", tx.bank)
+            .put("accountHint", tx.accountHint)
+            .put("type", tx.type)
+            .put("amount", bridgeAmount(tx))
+            .put("txAt", tx.txAt)
+            .put("description", tx.description)
+        tx.destinationAccountId?.let { payload.put("destinationAccountId", it) }
+        tx.categoryId?.let { payload.put("categoryId", it) }
+        val request = buildRequest(config, "PUT", "/v1/transactions/assignment", body(payload.toString()))
+        return withContext(Dispatchers.IO) {
+            runCatching {
+                okHttp.newCall(request).execute().use { res ->
+                    if (res.isSuccessful) {
+                        MemoUpdateResult(true, null)
+                    } else {
+                        MemoUpdateResult(false, "assignment update rejected (${res.code})")
+                    }
+                }
+            }.getOrElse {
+                MemoUpdateResult(false, "network unreachable")
+            }
         }
     }
 
@@ -177,6 +261,34 @@ class BridgeClient(
         }.getOrNull()
     }
 
+    private fun parseAccounts(res: Response): List<AccountDto> {
+        val body = res.body?.string() ?: return emptyList()
+        return runCatching {
+            val array = JSONObject(body).optJSONArray("accounts") ?: return@runCatching emptyList()
+            (0 until array.length()).map { i ->
+                val item = array.getJSONObject(i)
+                AccountDto(
+                    id = item.getInt("id"),
+                    label = item.optString("label", ""),
+                    currency = item.optString("currency", ""),
+                    type = item.optString("type", ""),
+                    isDefault = item.optBoolean("isDefault", false),
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private fun parseCategories(res: Response): List<CategoryDto> {
+        val body = res.body?.string() ?: return emptyList()
+        return runCatching {
+            val array = JSONObject(body).optJSONArray("categories") ?: return@runCatching emptyList()
+            (0 until array.length()).map { i ->
+                val item = array.getJSONObject(i)
+                CategoryDto(id = item.getInt("id"), label = item.optString("label", ""))
+            }
+        }.getOrDefault(emptyList())
+    }
+
     private fun readError(res: Response): String {
         val body = res.body?.string().orEmpty()
         return runCatching {
@@ -241,6 +353,12 @@ class BridgeClient(
             .put("description", tx.description)
             .put("memo", tx.userMemo.orEmpty())
             .put("fingerprint", tx.fingerprint)
+            .apply {
+                // Optional notification-engine fields (absent → unchanged behavior).
+                tx.accountId?.let { put("accountId", it) }
+                tx.destinationAccountId?.let { put("destinationAccountId", it) }
+                tx.categoryId?.let { put("categoryId", it) }
+            }
 
         // Preserve the captured amount locally; apply the IRR scale adjustment
         // only at the bridge boundary (shared by single and bulk requests).

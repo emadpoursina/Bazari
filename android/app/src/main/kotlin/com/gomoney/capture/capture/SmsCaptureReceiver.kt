@@ -4,6 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.telephony.SmsMessage
+import com.gomoney.capture.source.ParseErrorRepository
+import com.gomoney.capture.source.TransactionSourceRepository
+import com.gomoney.capture.source.UserSourceParser
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.DedupRepository
 import com.gomoney.capture.storage.DeliveryRepository
@@ -18,10 +21,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * SMS capture (US5, T043, FR-004/017): independently toggleable second source;
- * gated by smsCaptureEnabled (ignored entirely when off); bank SMS sender
- * allow-list from enabledBankPackages-style config; writes RawEvent(source=sms)
- * through the SAME pipeline so dedup fingerprints match notification captures.
+ * SMS capture (US5, T043, FR-004/017; 005 FR-013): independently toggleable
+ * second channel; gated by smsCaptureEnabled; every received SMS is passed
+ * through the source-only CapturePipeline — an SMS is considered only when an
+ * enabled TransactionSource claims its sender; no allow-list, no shipped
+ * parsers. RawEvent(source=sms) flows through the SAME pipeline so dedup
+ * fingerprints match notification captures.
  */
 class SmsCaptureReceiver : BroadcastReceiver() {
 
@@ -39,6 +44,8 @@ class SmsCaptureReceiver : BroadcastReceiver() {
                 TransactionSyncHelper.enqueueExpedited(context)
                 MemoPromptNotifier.show(context, tx)
             },
+            sourceRepository = TransactionSourceRepository(db.transactionSourceDao(), db.parseErrorDao(), db),
+            userSourceParser = UserSourceParser(ParseErrorRepository(db.parseErrorDao()), db.serverAccountDao()),
         )
         val gate = CaptureGate(PlatformCapturePermission(context))
 
@@ -50,8 +57,9 @@ class SmsCaptureReceiver : BroadcastReceiver() {
             try {
                 for (message in messages) {
                     val sender = message.originatingAddress ?: continue
-                    // FR-017: SMS ignored entirely when the toggle is off or
-                    // the sender is not allow-listed.
+                    // FR-017: SMS ignored entirely when the toggle is off;
+                    // otherwise every SMS goes through the source-only pipeline
+                    // (005 FR-013 — sources are the only admission gate).
                     if (!gate.allowsSmsCapture()) return@launch
                     pipeline.process(
                         RawEvent(

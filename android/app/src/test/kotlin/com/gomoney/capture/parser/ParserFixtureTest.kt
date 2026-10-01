@@ -30,6 +30,9 @@ class ParserFixtureTest {
         val dir = File("src/test/resources/fixtures")
         return dir.walkTopDown()
             .filter { it.isFile && it.extension == "json" }
+            // User-source fixtures have their own contract (no ParserRegistry
+            // selection) and are exercised by UserSourcePipelineTest.
+            .filterNot { it.path.contains("usersource") }
             .map { it.path.removePrefix("src/test/resources/").removePrefix("fixtures/") to JSONObject(it.readText()) }
             .toList()
     }

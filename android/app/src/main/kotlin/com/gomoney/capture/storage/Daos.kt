@@ -4,6 +4,8 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
+import androidx.room.Update
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
@@ -22,7 +24,10 @@ interface RawEventDao {
         """DELETE FROM raw_events WHERE id IN (
             SELECT sourceEventId FROM delivery_records
             WHERE state = 'sent'
-                AND id NOT IN (SELECT id FROM normalized_transactions WHERE memoSyncState = 'pending')
+                AND id NOT IN (
+                    SELECT id FROM normalized_transactions
+                    WHERE memoSyncState = 'pending' OR assignmentSyncState = 'pending'
+                )
         )""",
     )
     suspend fun deleteProcessedSources(): Int
@@ -46,6 +51,10 @@ interface NormalizedTransactionDao {
 
     @Query("SELECT * FROM normalized_transactions WHERE fingerprint = :fingerprint LIMIT 1")
     suspend fun byFingerprint(fingerprint: String): NormalizedTransaction?
+
+    /** The transaction produced by one captured event (005 hold/stamp tests). */
+    @Query("SELECT * FROM normalized_transactions WHERE sourceEventId = :sourceEventId LIMIT 1")
+    suspend fun bySourceEventId(sourceEventId: String): NormalizedTransaction?
 
     @Query("UPDATE normalized_transactions SET userMemo = :memo, memoSyncState = 'pending' WHERE id = :id")
     suspend fun updateMemo(id: String, memo: String?): Int
@@ -73,6 +82,62 @@ interface NormalizedTransactionDao {
 
     @Query("SELECT COUNT(*) FROM normalized_transactions")
     suspend fun count(): Int
+
+    // --- notification-engine assignment support (data-model.md §7) ---
+
+    /** Local-first assignment write: set destination/category and mark pending. */
+    @Query(
+        """UPDATE normalized_transactions
+            SET destinationAccountId = :destinationAccountId,
+                categoryId = :categoryId,
+                assignmentSyncState = 'pending'
+            WHERE id = :id""",
+    )
+    suspend fun updateAssignment(id: String, destinationAccountId: Int?, categoryId: Int?): Int
+
+    /** Clear pending only when the values still match what was pushed. */
+    @Query(
+        """UPDATE normalized_transactions SET assignmentSyncState = 'synced'
+            WHERE id = :id
+                AND destinationAccountId IS :destinationAccountId
+                AND categoryId IS :categoryId""",
+    )
+    suspend fun markAssignmentSynced(id: String, destinationAccountId: Int?, categoryId: Int?): Int
+
+    /** Already-delivered transactions whose assignment still needs pushing. */
+    @Query(
+        """SELECT normalized_transactions.* FROM normalized_transactions
+            INNER JOIN delivery_records ON delivery_records.id = normalized_transactions.id
+            WHERE normalized_transactions.assignmentSyncState = 'pending'
+                AND delivery_records.state = 'sent'
+            ORDER BY delivery_records.lastAttemptAt ASC, normalized_transactions.id ASC""",
+    )
+    suspend fun pendingAssignments(): List<NormalizedTransaction>
+
+    // --- 005-account-currency-sources: bind-time currency stamp (T028) ---
+
+    /**
+     * Stamp the bound account's currency + account id onto a source's
+     * still-held rows that have NO currency yet (FR-011). Rows with a
+     * non-empty currency — including delivered `sent` rows — are never
+     * rewritten (FR-008).
+     */
+    @Query(
+        """UPDATE normalized_transactions
+            SET currency = :currency, accountId = :accountId
+            WHERE sourceId = :sourceId
+                AND currency = ''
+                AND id IN (SELECT id FROM delivery_records WHERE state = 'held')""",
+    )
+    suspend fun stampHeldEmptyCurrency(sourceId: String, currency: String, accountId: Int): Int
+
+    /**
+     * 005 FR-022: pre-delivery user currency edit (delivery state held/queued/
+     * failed only — enforced in EventActions). Local update; no state change,
+     * no fingerprint recompute.
+     */
+    @Query("UPDATE normalized_transactions SET currency = :currency WHERE id = :id")
+    suspend fun updateCurrency(id: String, currency: String): Int
 }
 
 @Dao
@@ -85,6 +150,10 @@ interface DeliveryRecordDao {
 
     @Query("SELECT * FROM delivery_records WHERE id = :id")
     suspend fun byId(id: String): DeliveryRecord?
+
+    /** Outbox rows for one captured event (005 hold/stamp tests). */
+    @Query("SELECT * FROM delivery_records WHERE sourceEventId = :sourceEventId")
+    suspend fun bySourceEventId(sourceEventId: String): List<DeliveryRecord>
 
     /** Queued or failed rows, oldest first (FR-011 drain order). */
     @Query("SELECT * FROM delivery_records WHERE state IN ('queued', 'failed') ORDER BY lastAttemptAt ASC, id ASC")
@@ -111,9 +180,30 @@ interface DeliveryRecordDao {
     @Query(
         """DELETE FROM delivery_records
             WHERE state = 'sent'
-                AND id NOT IN (SELECT id FROM normalized_transactions WHERE memoSyncState = 'pending')""",
+                AND id NOT IN (
+                    SELECT id FROM normalized_transactions
+                    WHERE memoSyncState = 'pending' OR assignmentSyncState = 'pending'
+                )""",
     )
     suspend fun clearSent(): Int
+
+    // --- 005-account-currency-sources: held → queued on bind (T006/T028) ---
+
+    /**
+     * Move a source's held rows to `queued` once their transaction has been
+     * stamped with the bound account's currency (FR-011); returns the number
+     * of rows moved. Rows whose transaction does not carry [currency] stay
+     * held (or are simply not present — held rows always have empty currency).
+     */
+    @Query(
+        """UPDATE delivery_records SET state = 'queued'
+            WHERE state = 'held'
+                AND id IN (
+                    SELECT id FROM normalized_transactions
+                    WHERE sourceId = :sourceId AND currency = :currency
+                )""",
+    )
+    suspend fun moveHeldToQueuedForSource(sourceId: String, currency: String): Int
 }
 
 @Dao
@@ -123,4 +213,124 @@ interface DedupCacheDao {
 
     @Query("SELECT * FROM dedup_cache WHERE fingerprint = :fingerprint LIMIT 1")
     suspend fun byFingerprint(fingerprint: String): DedupCache?
+}
+
+@Dao
+interface TransactionSourceDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insert(source: TransactionSource): Long
+
+    @Update
+    suspend fun update(source: TransactionSource)
+
+    @Query("SELECT * FROM transaction_sources ORDER BY name ASC")
+    fun observeAll(): Flow<List<TransactionSource>>
+
+    @Query("SELECT * FROM transaction_sources ORDER BY name ASC")
+    suspend fun all(): List<TransactionSource>
+
+    @Query("SELECT * FROM transaction_sources WHERE enabled = 1")
+    suspend fun enabled(): List<TransactionSource>
+
+    @Query("SELECT * FROM transaction_sources WHERE id = :id")
+    suspend fun byId(id: String): TransactionSource?
+
+    @Query("SELECT * FROM transaction_sources WHERE identifier = :identifier AND channel = :channel LIMIT 1")
+    suspend fun byIdentifierAndChannel(identifier: String, channel: String): TransactionSource?
+
+    @Query("UPDATE transaction_sources SET enabled = :enabled, updatedAt = :updatedAt WHERE id = :id")
+    suspend fun setEnabled(id: String, enabled: Boolean, updatedAt: String): Int
+
+    @Query("DELETE FROM transaction_sources WHERE id = :id")
+    suspend fun deleteById(id: String): Int
+}
+
+@Dao
+interface ParseErrorDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(error: ParseErrorMessage)
+
+    @Query("SELECT * FROM parse_errors ORDER BY occurredAt DESC, id DESC")
+    fun observeAll(): Flow<List<ParseErrorMessage>>
+
+    @Query("SELECT * FROM parse_errors ORDER BY occurredAt DESC, id DESC")
+    suspend fun all(): List<ParseErrorMessage>
+
+    @Query("SELECT * FROM parse_errors WHERE id = :id")
+    suspend fun byId(id: String): ParseErrorMessage?
+
+    @Query("SELECT COUNT(*) FROM parse_errors")
+    suspend fun count(): Int
+
+    @Query("DELETE FROM parse_errors WHERE id = :id")
+    suspend fun dismiss(id: String): Int
+
+    @Query("UPDATE parse_errors SET sourceId = NULL WHERE sourceId = :sourceId")
+    suspend fun clearSource(sourceId: String): Int
+
+    /** Retention: drop entries older than the cutoff (FR-028). */
+    @Query("DELETE FROM parse_errors WHERE occurredAt < :cutoffIso")
+    suspend fun deleteOlderThan(cutoffIso: String): Int
+
+    /** Retention: keep only the newest [keep] rows (FR-028). */
+    @Query(
+        """DELETE FROM parse_errors WHERE id IN (
+            SELECT id FROM parse_errors ORDER BY occurredAt DESC, id DESC LIMIT -1 OFFSET :keep
+        )""",
+    )
+    suspend fun deleteBeyond(keep: Int): Int
+}
+
+@Dao
+interface ServerAccountDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(accounts: List<ServerAccount>)
+
+    @Query("DELETE FROM server_accounts")
+    suspend fun deleteAll()
+
+    @Transaction
+    suspend fun replaceAll(accounts: List<ServerAccount>) {
+        deleteAll()
+        insertAll(accounts)
+    }
+
+    @Query("SELECT * FROM server_accounts ORDER BY label ASC")
+    fun observeAll(): Flow<List<ServerAccount>>
+
+    @Query("SELECT * FROM server_accounts ORDER BY label ASC")
+    suspend fun all(): List<ServerAccount>
+
+    @Query("SELECT * FROM server_accounts WHERE id = :id")
+    suspend fun byId(id: Int): ServerAccount?
+
+    @Query("SELECT COUNT(*) FROM server_accounts")
+    suspend fun count(): Int
+}
+
+@Dao
+interface ServerCategoryDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(categories: List<ServerCategory>)
+
+    @Query("DELETE FROM server_categories")
+    suspend fun deleteAll()
+
+    @Transaction
+    suspend fun replaceAll(categories: List<ServerCategory>) {
+        deleteAll()
+        insertAll(categories)
+    }
+
+    @Query("SELECT * FROM server_categories ORDER BY label ASC")
+    fun observeAll(): Flow<List<ServerCategory>>
+
+    @Query("SELECT * FROM server_categories ORDER BY label ASC")
+    suspend fun all(): List<ServerCategory>
+
+    @Query("SELECT * FROM server_categories WHERE id = :id")
+    suspend fun byId(id: Int): ServerCategory?
+
+    @Query("SELECT COUNT(*) FROM server_categories")
+    suspend fun count(): Int
 }

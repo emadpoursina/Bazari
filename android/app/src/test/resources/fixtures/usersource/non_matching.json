@@ -1,0 +1,20 @@
+{
+  "name": "user source message that does not match the template",
+  "source": {
+    "identifier": "com.example.bank",
+    "channel": "notification",
+    "template": "خرید مبلغ {amount} ریال {direction}",
+    "incomeKeywords": ["واریز"],
+    "expenseKeywords": ["خرید"]
+  },
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "com.example.bank",
+    "title": "Example Bank",
+    "text": "پیام نامربوط از این فرستنده",
+    "postedAt": "2026-09-24T08:18:00+03:30"
+  },
+  "expectedFailure": {
+    "reason_contains": "does not match"
+  }
+}

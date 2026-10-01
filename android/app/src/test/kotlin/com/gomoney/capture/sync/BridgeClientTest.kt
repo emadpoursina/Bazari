@@ -1,6 +1,10 @@
 package com.gomoney.capture.sync
 
+import android.content.Context
+import androidx.room.Room
+import androidx.test.core.app.ApplicationProvider
 import com.gomoney.capture.model.ErrorCategory
+import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.NormalizedTransaction
 import com.gomoney.capture.storage.ServerConfiguration
 import kotlinx.coroutines.test.runTest
@@ -238,5 +242,130 @@ class BridgeClientTest {
 
         val body = JSONObject(server.takeRequest().body.readUtf8())
         assertEquals("coffee", body.getString("memo"))
+    }
+
+    // --- notification-engine catalog + assignment calls (T029/T047) ---
+
+    @Test
+    fun `fetch accounts parses the minimal projection`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody(
+                """{"accounts":[{"id":3,"label":"Bank Mellat","currency":"IRR","type":"expense","isDefault":true}]}""",
+            ),
+        )
+
+        val result = BridgeClient().fetchAccounts(config)
+
+        assertTrue(result.ok)
+        val account = result.items.single()
+        assertEquals(3, account.id)
+        assertEquals("Bank Mellat", account.label)
+        assertEquals("IRR", account.currency)
+        assertEquals("expense", account.type)
+        assertTrue(account.isDefault)
+        val request = server.takeRequest()
+        assertEquals("GET", request.method)
+        assertEquals("/v1/accounts", request.path)
+        assertEquals("Bearer test-token", request.getHeader("Authorization"))
+    }
+
+    @Test
+    fun `fetch accounts failure is not ok and yields no items`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(502).setBody("""{"error":"gomoney_unreachable"}"""))
+
+        val result = BridgeClient().fetchAccounts(config)
+
+        assertTrue(!result.ok)
+        assertTrue(result.items.isEmpty())
+    }
+
+    @Test
+    fun `fetch categories parses the minimal projection`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody("""{"categories":[{"id":5,"label":"Groceries"}]}"""),
+        )
+
+        val result = BridgeClient().fetchCategories(config)
+
+        assertTrue(result.ok)
+        assertEquals(5, result.items.single().id)
+        assertEquals("Groceries", result.items.single().label)
+        assertEquals("/v1/categories", server.takeRequest().path)
+    }
+
+    @Test
+    fun `update assignment sends the chosen ids to the assignment endpoint`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody("""{"status":"updated","gomoneyTxnId":"12"}"""),
+        )
+
+        val result = BridgeClient().updateAssignment(
+            config,
+            tx().copy(gomoneyTxnId = "12", destinationAccountId = 7, categoryId = 5),
+        )
+
+        assertTrue(result.ok)
+        val request = server.takeRequest()
+        assertEquals("PUT", request.method)
+        assertEquals("/v1/transactions/assignment", request.path)
+        val body = JSONObject(request.body.readUtf8())
+        assertEquals(7, body.getInt("destinationAccountId"))
+        assertEquals(5, body.getInt("categoryId"))
+        assertEquals(50_000L, body.getLong("amount"))
+    }
+
+    /** FR-016: a failed refresh keeps the last known list and flags it unavailable. */
+    @Test
+    fun `failed account refresh keeps the cached list and flags unavailable`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val catalog = CatalogRepository(db.serverAccountDao(), db.serverCategoryDao(), BridgeClient())
+
+            server.enqueue(
+                MockResponse().setResponseCode(200).setBody(
+                    """{"accounts":[{"id":3,"label":"Bank Mellat","currency":"IRR","type":"expense","isDefault":false}]}""",
+                ),
+            )
+            assertTrue(catalog.refreshAccounts(config))
+            assertEquals(1, catalog.accounts().size)
+
+            server.enqueue(MockResponse().setResponseCode(502).setBody("""{"error":"gomoney_unreachable"}"""))
+            assertTrue(!catalog.refreshAccounts(config))
+
+            assertEquals(1, catalog.accounts().size) // cache intact, binding not lost
+            assertEquals(CatalogRepository.Status.UNAVAILABLE, catalog.state.value.accounts)
+        } finally {
+            db.close()
+        }
+    }
+
+    @Test
+    fun `stale binding is detected when the account is absent from the server list`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val catalog = CatalogRepository(db.serverAccountDao(), db.serverCategoryDao(), BridgeClient())
+            val accounts = listOf(
+                com.gomoney.capture.storage.ServerAccount(
+                    id = 3,
+                    label = "Bank Mellat",
+                    currency = "IRR",
+                    type = "expense",
+                    isDefault = false,
+                    refreshedAt = "2026-09-24T00:00:00+03:30",
+                ),
+            )
+
+            assertTrue(!catalog.isBindingStale(3, accounts))
+            assertTrue(catalog.isBindingStale(99, accounts))
+            assertTrue(!catalog.isBindingStale(null, accounts))
+        } finally {
+            db.close()
+        }
     }
 }

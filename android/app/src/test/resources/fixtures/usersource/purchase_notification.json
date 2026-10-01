@@ -1,0 +1,22 @@
+{
+  "name": "user source purchase (notification, Persian digits)",
+  "source": {
+    "identifier": "com.example.bank",
+    "channel": "notification",
+    "template": "خريد به مبلغ {amount} ریال {direction}",
+    "incomeKeywords": ["واریز"],
+    "expenseKeywords": ["خريد", "خرید"]
+  },
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "com.example.bank",
+    "title": "Example Bank",
+    "text": "خريد به مبلغ ۵۰۰٬۰۰۰ ریال فروشگاه قطبی",
+    "postedAt": "2026-09-23T20:31:22+03:30"
+  },
+  "expected": {
+    "type": "expense",
+    "amountMinor": 500000,
+    "direction": "EXPENSE"
+  }
+}

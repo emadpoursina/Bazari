@@ -26,13 +26,16 @@ type fakeGoMoneyClient struct {
 	createErr     error
 	pingErr       error
 	accountsErr   error
+	categoriesErr error
 	currenciesErr error
 	accounts      []GoMoneyAccount
+	categories    []GoMoneyCategory
 	currencies    []GoMoneyCurrency
 	created       []*transactionsv1.CreateTransactionRequest
 	updated       []*transactionsv1.UpdateTransactionRequest
 	existing      map[int64]*gomoneypbv1.Transaction
 	nextTxnId     int64
+	updateErr     error
 	failConnect   bool // return a connect Unavailable error
 }
 
@@ -96,6 +99,9 @@ func (f *fakeGoMoneyClient) UpdateTransaction(
 	ctx context.Context,
 	req *transactionsv1.UpdateTransactionRequest,
 ) (*transactionsv1.UpdateTransactionResponse, error) {
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
 	f.updated = append(f.updated, req)
 	if txn, ok := f.existing[req.GetId()]; ok {
 		txn.Title = req.GetTransaction().GetTitle()
@@ -120,6 +126,19 @@ func (f *fakeGoMoneyClient) ListAccounts(ctx context.Context) ([]GoMoneyAccount,
 		{ID: 1, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, Currency: "IRR"},
 		{ID: 2, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, Currency: "IRR", IsDefault: true},
 		{ID: 3, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_INCOME, Currency: "IRR", IsDefault: true},
+	}, nil
+}
+
+func (f *fakeGoMoneyClient) ListCategories(ctx context.Context) ([]GoMoneyCategory, error) {
+	if f.categoriesErr != nil {
+		return nil, f.categoriesErr
+	}
+	if f.categories != nil {
+		return f.categories, nil
+	}
+	return []GoMoneyCategory{
+		{ID: 5, Label: "Groceries"},
+		{ID: 6, Label: "Salary"},
 	}, nil
 }
 
@@ -566,7 +585,7 @@ func TestBulkPerItemResults(t *testing.T) {
 	b := validTxn(fingerprintHex(41))
 	b.Description = "Coffee shop" // distinct real transaction, same bucket
 	c := validTxn(fingerprintHex(42))
-	c.Currency = "USD" // per-item validation failure
+	c.Currency = "" // per-item validation failure (005: blank currency is rejected; USD is valid)
 
 	res := bridgePost(t, ts.URL+"/v1/transactions/bulk", "test-token",
 		marshal(t, &BulkTransactionRequest{Transactions: []*NormalizedTransaction{a, b, b, c}}))
@@ -647,4 +666,186 @@ func readBody(t *testing.T, res *http.Response) string {
 	data, err := io.ReadAll(res.Body)
 	require.NoError(t, err)
 	return string(data)
+}
+
+// --- notification-engine additions (T028/T038/T039/T046) ---
+
+func bridgeGet(t *testing.T, url, token string) *http.Response {
+	t.Helper()
+	return bridgeRequest(t, http.MethodGet, url, token, nil)
+}
+
+func TestListAccountsEndpoint(t *testing.T) {
+	client := &fakeGoMoneyClient{accounts: []GoMoneyAccount{
+		{ID: 3, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, TypeName: "expense", Label: "Bank Mellat", Currency: "IRR"},
+		{ID: 7, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, TypeName: "asset", Label: "Wallet", Currency: "IRR", IsDefault: false},
+	}}
+	_, ts := newTestServer(t, client)
+
+	res := bridgeGet(t, ts.URL+"/v1/accounts", "test-token")
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.JSONEq(t, `{"accounts":[
+		{"id":3,"label":"Bank Mellat","currency":"IRR","type":"expense","isDefault":false},
+		{"id":7,"label":"Wallet","currency":"IRR","type":"asset","isDefault":false}
+	]}`, readBody(t, res))
+
+	// Unauthorized without a token.
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/v1/accounts", nil)
+	require.NoError(t, err)
+	unauth, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = unauth.Body.Close() }()
+	require.Equal(t, http.StatusUnauthorized, unauth.StatusCode)
+}
+
+func TestListAccountsEndpointErrors(t *testing.T) {
+	client := &fakeGoMoneyClient{accountsErr: connect.NewError(connect.CodeUnavailable, fmt.Errorf("down"))}
+	_, ts := newTestServer(t, client)
+
+	res := bridgeGet(t, ts.URL+"/v1/accounts", "test-token")
+	require.Equal(t, http.StatusBadGateway, res.StatusCode)
+	require.Contains(t, readBody(t, res), "gomoney_unreachable")
+
+	client.accountsErr = connect.NewError(connect.CodeInternal, fmt.Errorf("boom"))
+	res2 := bridgeGet(t, ts.URL+"/v1/accounts", "test-token")
+	require.Equal(t, http.StatusInternalServerError, res2.StatusCode)
+	require.Contains(t, readBody(t, res2), "gomoney_error")
+}
+
+func TestListCategoriesEndpoint(t *testing.T) {
+	client := &fakeGoMoneyClient{categories: []GoMoneyCategory{
+		{ID: 5, Label: "Groceries"},
+		{ID: 6, Label: "Salary"},
+	}}
+	_, ts := newTestServer(t, client)
+
+	res := bridgeGet(t, ts.URL+"/v1/categories", "test-token")
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.JSONEq(t, `{"categories":[{"id":5,"label":"Groceries"},{"id":6,"label":"Salary"}]}`, readBody(t, res))
+
+	client.categoriesErr = connect.NewError(connect.CodeUnavailable, fmt.Errorf("down"))
+	res2 := bridgeGet(t, ts.URL+"/v1/categories", "test-token")
+	require.Equal(t, http.StatusBadGateway, res2.StatusCode)
+	require.Contains(t, readBody(t, res2), "gomoney_unreachable")
+}
+
+func TestCreateWithAccountIdTakesPrecedenceOverMapping(t *testing.T) {
+	client := &fakeGoMoneyClient{}
+	_, ts := newTestServer(t, client)
+
+	txn := validTxn(fingerprintHex(70))
+	txn.Bank = "user"
+	txn.AccountHint = "com.example.bank"
+	accountID := int32(1)
+	txn.AccountId = &accountID
+
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Len(t, client.created, 1)
+	require.Equal(t, int32(1), client.created[0].GetExpense().GetSourceAccountId())
+}
+
+func TestCreateWithUnknownAccountIdRejected(t *testing.T) {
+	client := &fakeGoMoneyClient{}
+	_, ts := newTestServer(t, client)
+
+	txn := validTxn(fingerprintHex(71))
+	txn.Bank = "user"
+	txn.AccountHint = "com.example.bank"
+	unknown := int32(999)
+	txn.AccountId = &unknown
+
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+	require.Empty(t, client.created)
+}
+
+func TestCreateWithDestinationAndCategory(t *testing.T) {
+	client := &fakeGoMoneyClient{categories: []GoMoneyCategory{{ID: 5, Label: "Groceries"}}}
+	_, ts := newTestServer(t, client)
+
+	txn := validTxn(fingerprintHex(72))
+	destination := int32(3)
+	category := int32(5)
+	txn.DestinationAccountId = &destination
+	txn.CategoryId = &category
+
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Len(t, client.created, 1)
+	require.Equal(t, int32(3), client.created[0].GetExpense().GetDestinationAccountId())
+	require.Equal(t, &category, client.created[0].CategoryId)
+
+	// Unknown category → 400.
+	unknownCategory := int32(99)
+	bad := validTxn(fingerprintHex(73))
+	bad.Amount = 600000
+	bad.Description = "Different purchase"
+	bad.CategoryId = &unknownCategory
+	res2 := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, bad))
+	require.Equal(t, http.StatusBadRequest, res2.StatusCode)
+}
+
+func TestUpdateAssignmentUpdatesSameTransaction(t *testing.T) {
+	client := &fakeGoMoneyClient{categories: []GoMoneyCategory{{ID: 5, Label: "Groceries"}}}
+	_, ts := newTestServer(t, client)
+	txn := validTxn(fingerprintHex(74))
+	created := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+	require.Equal(t, http.StatusCreated, created.StatusCode)
+
+	destination := int32(3)
+	category := int32(5)
+	update := &AssignmentUpdateRequest{
+		Fingerprint:          txn.Fingerprint,
+		GomoneyTxnId:         "1",
+		Bank:                 txn.Bank,
+		AccountHint:          txn.AccountHint,
+		Type:                 txn.Type,
+		Amount:               txn.Amount,
+		TxAt:                 txn.TxAt,
+		Description:          txn.Description,
+		DestinationAccountId: &destination,
+		CategoryId:           &category,
+	}
+	res := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/assignment", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.JSONEq(t, `{"status":"updated","gomoneyTxnId":"1"}`, readBody(t, res))
+	require.Len(t, client.created, 1, "assignment must not create a second transaction")
+	require.Len(t, client.updated, 1)
+	require.EqualValues(t, 1, client.updated[0].GetId())
+	require.Equal(t, int32(3), client.updated[0].GetTransaction().GetExpense().GetDestinationAccountId())
+	require.Equal(t, &category, client.updated[0].GetTransaction().CategoryId)
+}
+
+func TestUpdateAssignmentValidationAndNotFound(t *testing.T) {
+	client := &fakeGoMoneyClient{}
+	_, ts := newTestServer(t, client)
+
+	// Malformed fingerprint → 400.
+	bad := &AssignmentUpdateRequest{Fingerprint: "short"}
+	res := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/assignment", "test-token", marshal(t, bad))
+	require.Equal(t, http.StatusBadRequest, res.StatusCode)
+
+	// No recorded transaction matches → 404.
+	unknown := &AssignmentUpdateRequest{Fingerprint: fingerprintHex(75)}
+	res2 := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/assignment", "test-token", marshal(t, unknown))
+	require.Equal(t, http.StatusNotFound, res2.StatusCode)
+}
+
+func TestUpdateAssignmentGoMoneyFailureIsRetryable(t *testing.T) {
+	client := &fakeGoMoneyClient{}
+	_, ts := newTestServer(t, client)
+	txn := validTxn(fingerprintHex(76))
+	require.Equal(t, http.StatusCreated, bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn)).StatusCode)
+
+	client.updateErr = connect.NewError(connect.CodeUnavailable, fmt.Errorf("down"))
+	destination := int32(3)
+	update := &AssignmentUpdateRequest{
+		Fingerprint:          txn.Fingerprint,
+		GomoneyTxnId:         "1",
+		DestinationAccountId: &destination,
+	}
+	res := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/assignment", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusBadGateway, res.StatusCode)
+	require.Contains(t, readBody(t, res), "gomoney_unreachable")
 }

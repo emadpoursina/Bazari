@@ -51,6 +51,8 @@ data class EventRow(
     val description: String = "",
     val userMemo: String? = null,
     val memoSyncState: String = "synced",
+    // 005 FR-004: the transaction's own currency; blank = unknown (no label).
+    val currency: String = "",
 )
 
 class EventsViewModel(db: AppDatabase) : ViewModel() {
@@ -78,6 +80,7 @@ class EventsViewModel(db: AppDatabase) : ViewModel() {
                 description = tx.description,
                 userMemo = tx.userMemo,
                 memoSyncState = tx.memoSyncState,
+                currency = tx.currency,
             )
         }
         // Parse-error rows: delivery record without a normalized transaction.
@@ -163,7 +166,11 @@ private fun EventCard(
         Column(modifier = Modifier.padding(12.dp)) {
             Row(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = if (row.amountMinor == 0L) "—" else "${row.amountMinor} IRR",
+                    // 005 FR-003/004: never a hardcoded rial label. Blank
+                    // (unknown) currency shows the bare amount.
+                    text = if (row.amountMinor == 0L) "—"
+                    else row.currency.takeIf { it.isNotBlank() }?.let { "${row.amountMinor} $it" }
+                        ?: "${row.amountMinor}",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.weight(1f),
                 )

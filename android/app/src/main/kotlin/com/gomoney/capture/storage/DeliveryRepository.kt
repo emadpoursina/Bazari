@@ -11,7 +11,10 @@ fun DeliveryRecord.deliveryStateOf(): DeliveryState =
 /**
  * Delivery state machine helpers (data-model.md §3):
  * CAPTURED → PARSED → QUEUED → SENDING → SENT (terminal) and
- * SENDING → FAILED → QUEUED on retry. All transitions are transactional.
+ * SENDING → FAILED → QUEUED on retry. 005-account-currency-sources adds
+ * `HELD`: a capture with no currency (unbound/stale/blank-currency source)
+ * parks here; the only legal transition out is HELD → QUEUED (stamped at
+ * bind time — never directly to SENDING). All transitions are transactional.
  */
 class DeliveryRepository(
     private val deliveryRecordDao: DeliveryRecordDao,
@@ -25,6 +28,9 @@ class DeliveryRepository(
         DeliveryState.QUEUED to setOf(DeliveryState.SENDING),
         DeliveryState.SENDING to setOf(DeliveryState.SENT, DeliveryState.FAILED),
         DeliveryState.FAILED to setOf(DeliveryState.QUEUED),
+        // 005: held rows unlock only via the bind-time stamp; never straight
+        // to SENDING (data-model.md §6 outbox table).
+        DeliveryState.HELD to setOf(DeliveryState.QUEUED),
         DeliveryState.SENT to emptySet(), // terminal & immutable
     )
 
@@ -33,6 +39,26 @@ class DeliveryRepository(
         val record = DeliveryRecord(
             id = id,
             state = DeliveryState.QUEUED.name.lowercase(),
+            attempts = 0,
+            lastAttemptAt = null,
+            nextRetryAt = null,
+            errorCategory = null,
+            errorDetail = null,
+            sourceEventId = sourceEventId,
+        )
+        deliveryRecordDao.insert(record)
+        return record
+    }
+
+    /**
+     * Create the outbox row for a captured transaction whose source is
+     * unbound/stale/blank-currency (005 FR-009/010): currency-less rows are
+     * held locally and never delivered until the source is bound.
+     */
+    suspend fun createHeld(id: String, sourceEventId: String): DeliveryRecord {
+        val record = DeliveryRecord(
+            id = id,
+            state = DeliveryState.HELD.name.lowercase(),
             attempts = 0,
             lastAttemptAt = null,
             nextRetryAt = null,

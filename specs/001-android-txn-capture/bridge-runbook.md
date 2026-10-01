@@ -100,11 +100,41 @@ configured and do not create a public router port-forward for the bridge.
 | Endpoint | Purpose |
 |---|---|
 | `POST /v1/ping` | connection test; reports Go Money reachability |
-| `POST /v1/transactions` | deliver one normalized transaction (201 created / 200 duplicate / 400 validation / 502 unreachable / 500 gomoney_error) |
+| `POST /v1/transactions` | deliver one normalized transaction (201 created / 200 duplicate / 400 validation / 502 unreachable / 500 gomoney_error). Optional `accountId`, `destinationAccountId`, `categoryId` fields support user-defined sources (notification engine) |
 | `POST /v1/transactions/bulk` | drain optimization, max 50 items, per-item results |
+| `PUT /v1/transactions/memo` | update the note on an already-recorded transaction (same transaction, never a second one) |
+| `PUT /v1/transactions/assignment` | set/change the destination account and/or category on an already-recorded transaction (200 updated / 400 / 404 / 502 unreachable / 500 gomoney_error) |
+| `GET /v1/accounts` | server accounts for the source-binding and destination-account selectors (`{id,label,currency,type,isDefault}`) |
+| `GET /v1/categories` | server categories for the transaction category selector (`{id,label}`) |
 | `GET/PUT /v1/mappings` | account-hint mapping management |
 
 All endpoints require `Authorization: Bearer <token>` (constant-time compare).
+
+### Notification-engine catalog & assignment calls
+
+`GET /v1/accounts`, `GET /v1/categories`, and `PUT /v1/transactions/assignment` are
+additive to the capture-feature surface (see
+`specs/004-notification-engine/contracts/bridge-api.md`). They reuse the
+existing Go Money service token; no new credential is required.
+
+`POST /v1/transactions` accepts three optional fields, absent in older app
+builds (behavior then unchanged):
+
+- `accountId` — the server account a user-defined source is bound to; takes
+  precedence over the `(bank, accountHint)` mapping.
+- `destinationAccountId` — Go Money destination account set at creation.
+- `categoryId` — Go Money category set at creation.
+
+`PUT /v1/transactions/assignment` looks the recorded transaction up in the
+dedup registry (exact fingerprint → `gomoneyTxnId` → identity/window fallback),
+reuses the current Go Money financial fields, and updates only the destination
+account/category — so an already-delivered capture is updated in place and no
+second transaction is created. A failed/unreachable bridge keeps the choice
+`pending` on the phone and retries automatically.
+
+Both catalog endpoints return `502 {"error":"gomoney_unreachable"}` when Go
+Money is down and `500 {"error":"gomoney_error"}` otherwise; the app keeps its
+cached list and shows an "unavailable" indicator rather than losing a binding.
 
 ## 6. Logging rules (FR-028)
 

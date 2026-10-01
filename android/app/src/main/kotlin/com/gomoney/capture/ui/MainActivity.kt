@@ -62,15 +62,23 @@ private fun AppTabs(
     permission: PlatformCapturePermission,
 ) {
     var selectedTab by remember { mutableStateOf(0) }
-    val tabs = listOf("Dashboard", "Events", "Settings")
+    val tabs = listOf("Dashboard", "Events", "Sources", "Settings")
 
     // View models are hoisted above the tab switcher so state survives tab
     // changes (remembered once per composition, not per branch).
     val dashboardViewModel = remember { DashboardViewModel(db, settings, permission) }
     val eventsViewModel = remember { EventsViewModel(db) }
     val settingsViewModel = remember { SettingsViewModel(settings) }
+    val sourcesViewModel = remember { SourcesViewModel(db, settings) }
+    val sourceEditorViewModel = remember { SourceEditorViewModel(db, settings) }
     val dashboardState by dashboardViewModel.state.collectAsStateWithLifecycleCompat()
     val eventsState by eventsViewModel.state.collectAsStateWithLifecycleCompat()
+    val sourcesState by sourcesViewModel.state.collectAsStateWithLifecycleCompat()
+    val editorAccounts by sourceEditorViewModel.accounts.collectAsStateWithLifecycleCompat()
+    val editorCatalogState by sourceEditorViewModel.catalogState.collectAsStateWithLifecycleCompat()
+    val editorErrors by sourceEditorViewModel.errors.collectAsStateWithLifecycleCompat()
+    val editorTestResult by sourceEditorViewModel.testResult.collectAsStateWithLifecycleCompat()
+    var editingSource by remember { mutableStateOf<com.gomoney.capture.storage.TransactionSource?>(null) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val eventActions = remember { EventActions(context, db) }
@@ -114,7 +122,59 @@ private fun AppTabs(
                         scope.launch { eventActions.clearAll() }
                     },
                 )
-                2 -> SettingsScreen(
+                2 -> {
+                    val source = editingSource
+                    if (source == null) {
+                        SourcesScreen(
+                            sources = sourcesState.sources,
+                            parseErrors = sourcesState.parseErrors,
+                            staleBindingIds = sourcesState.staleBindingIds,
+                            onAdd = {
+                                sourceEditorViewModel.clearTest()
+                                editingSource = sourceEditorViewModel.newSource()
+                                sourceEditorViewModel.loadCachedAccounts()
+                            },
+                            onEdit = { id ->
+                                scope.launch {
+                                    sourceEditorViewModel.load(id)?.let {
+                                        sourceEditorViewModel.clearTest()
+                                        editingSource = it
+                                        sourceEditorViewModel.loadCachedAccounts()
+                                    }
+                                }
+                            },
+                            onToggle = { id, enabled ->
+                                scope.launch { sourcesViewModel.setEnabled(id, enabled) }
+                            },
+                            onRemove = { id -> scope.launch { sourcesViewModel.remove(id) } },
+                            onDismissParseError = { id -> scope.launch { sourcesViewModel.dismissParseError(id) } },
+                        )
+                    } else {
+                        SourceEditorScreen(
+                            initial = source,
+                            accounts = editorAccounts,
+                            catalogUnavailable = editorCatalogState.accounts ==
+                                com.gomoney.capture.sync.CatalogRepository.Status.UNAVAILABLE,
+                            errors = editorErrors,
+                            testResult = editorTestResult,
+                            onSave = { updated ->
+                                scope.launch {
+                                    if (sourceEditorViewModel.save(updated) is
+                                        com.gomoney.capture.source.SaveResult.Saved
+                                    ) {
+                                        editingSource = null
+                                    }
+                                }
+                            },
+                            onCancel = { editingSource = null },
+                            onTest = { template, message, income, expense ->
+                                sourceEditorViewModel.test(template, message, income, expense)
+                            },
+                            onRefreshAccounts = { sourceEditorViewModel.refreshAccounts() },
+                        )
+                    }
+                }
+                3 -> SettingsScreen(
                     viewModel = settingsViewModel,
                     permission = permission,
                     onTestConnection = { settingsViewModel.testConnection() },

@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	accountsv1connect "buf.build/gen/go/xskydev/go-money-pb/connectrpc/go/gomoneypb/accounts/v1/accountsv1connect"
+	categoriesv1connect "buf.build/gen/go/xskydev/go-money-pb/connectrpc/go/gomoneypb/categories/v1/categoriesv1connect"
 	currencyv1connect "buf.build/gen/go/xskydev/go-money-pb/connectrpc/go/gomoneypb/currency/v1/currencyv1connect"
 	accountsv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/accounts/v1"
+	categoriesv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/categories/v1"
 	currencyv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/currency/v1"
 	gomoneypbv1 "buf.build/gen/go/xskydev/go-money-pb/protocolbuffers/go/gomoneypb/v1"
 	"connectrpc.com/connect"
@@ -30,7 +32,7 @@ func TestGoMoneyConnectClientListAccounts(t *testing.T) {
 						Id:       11,
 						Type:     gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET,
 						Currency: "IRR",
-						Name:     "must not be returned",
+						Name:     "Bank Mellat",
 					}},
 					{Account: &gomoneypbv1.Account{
 						Id:       12,
@@ -55,9 +57,44 @@ func TestGoMoneyConnectClientListAccounts(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "Bearer service-token", authorization)
 	require.Equal(t, []GoMoneyAccount{
-		{ID: 11, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, Currency: "IRR"},
-		{ID: 12, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, Currency: "IRR", IsDefault: true},
+		{ID: 11, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, TypeName: "asset", Label: "Bank Mellat", Currency: "IRR"},
+		{ID: 12, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, TypeName: "expense", Currency: "IRR", IsDefault: true},
 	}, accounts)
+}
+
+func TestGoMoneyConnectClientListCategories(t *testing.T) {
+	var authorization string
+	mux := http.NewServeMux()
+	listCategories := connect.NewUnaryHandler(
+		categoriesv1connect.CategoriesServiceListCategoriesProcedure,
+		func(
+			_ context.Context,
+			_ *connect.Request[categoriesv1.ListCategoriesRequest],
+		) (*connect.Response[categoriesv1.ListCategoriesResponse], error) {
+			return connect.NewResponse(&categoriesv1.ListCategoriesResponse{
+				Categories: []*gomoneypbv1.Category{
+					{Id: 5, Name: "Groceries"},
+					{Id: 6, Name: "Salary"},
+				},
+			}), nil
+		},
+	)
+	mux.Handle(categoriesv1connect.CategoriesServiceListCategoriesProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization = r.Header.Get("Authorization")
+		listCategories.ServeHTTP(w, r)
+	}))
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	client := NewGoMoneyConnectClient(server.URL, "service-token")
+	categories, err := client.ListCategories(context.Background())
+
+	require.NoError(t, err)
+	require.Equal(t, "Bearer service-token", authorization)
+	require.Equal(t, []GoMoneyCategory{
+		{ID: 5, Label: "Groceries"},
+		{ID: 6, Label: "Salary"},
+	}, categories)
 }
 
 func TestGoMoneyConnectClientListCurrencies(t *testing.T) {

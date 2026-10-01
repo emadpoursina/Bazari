@@ -1,0 +1,22 @@
+{
+  "name": "user source amount written in Persian digits with separators",
+  "source": {
+    "identifier": "com.example.bank",
+    "channel": "notification",
+    "template": "خرید مبلغ {amount} ریال {direction}",
+    "incomeKeywords": ["واریز"],
+    "expenseKeywords": ["خرید"]
+  },
+  "raw": {
+    "source": "notification",
+    "sourcePackage": "com.example.bank",
+    "title": "Example Bank",
+    "text": "خرید مبلغ ۲۵۰٬۰۰۰ ریال نانوایی",
+    "postedAt": "2026-09-24T08:15:00+03:30"
+  },
+  "expected": {
+    "type": "expense",
+    "amountMinor": 250000,
+    "direction": "EXPENSE"
+  }
+}

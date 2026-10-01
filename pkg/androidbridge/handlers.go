@@ -170,6 +170,232 @@ func (s *Server) handleUpdateMemo(w http.ResponseWriter, r *http.Request) {
 	s.log.Request("PUT /v1/transactions/memo", req.Fingerprint, "updated", s.now().Sub(start))
 }
 
+// handleListAccounts implements GET /v1/accounts (notification-engine
+// bridge-api.md). Reads Go Money ListAccounts with the bridge service token and
+// returns a minimal projection for the app's source-binding and
+// destination-account selectors.
+func (s *Server) handleListAccounts(w http.ResponseWriter, r *http.Request) {
+	start := s.now()
+	accounts, err := s.client.ListAccounts(r.Context())
+	if err != nil {
+		status, body := classifyGoMoneyError(err)
+		writeJSON(w, status, body)
+		s.log.Request("GET /v1/accounts", "", fmt.Sprintf("http=%d", status), s.now().Sub(start))
+		return
+	}
+	summaries := make([]AccountSummary, 0, len(accounts))
+	for _, account := range accounts {
+		summaries = append(summaries, AccountSummary{
+			Id:        account.ID,
+			Label:     account.Label,
+			Currency:  account.Currency,
+			Type:      account.TypeName,
+			IsDefault: account.IsDefault,
+		})
+	}
+	writeJSON(w, http.StatusOK, AccountListResponse{Accounts: summaries})
+	s.log.Request("GET /v1/accounts", "", fmt.Sprintf("count=%d", len(summaries)), s.now().Sub(start))
+}
+
+// handleListCategories implements GET /v1/categories (notification-engine
+// bridge-api.md) for the transaction category selector.
+func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {
+	start := s.now()
+	categories, err := s.client.ListCategories(r.Context())
+	if err != nil {
+		status, body := classifyGoMoneyError(err)
+		writeJSON(w, status, body)
+		s.log.Request("GET /v1/categories", "", fmt.Sprintf("http=%d", status), s.now().Sub(start))
+		return
+	}
+	summaries := make([]CategorySummary, 0, len(categories))
+	for _, category := range categories {
+		summaries = append(summaries, CategorySummary{Id: category.ID, Label: category.Label})
+	}
+	writeJSON(w, http.StatusOK, CategoryListResponse{Categories: summaries})
+	s.log.Request("GET /v1/categories", "", fmt.Sprintf("count=%d", len(summaries)), s.now().Sub(start))
+}
+
+// handleUpdateAssignment implements PUT /v1/transactions/assignment
+// (bridge-api.md): set/change the destination account and/or category of a
+// transaction already recorded in Go Money, updating the SAME transaction and
+// never creating a second one (FR-020, SC-005).
+func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) {
+	start := s.now()
+
+	var req AssignmentUpdateRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if details := validateAssignmentUpdate(&req); len(details) > 0 {
+		writeJSON(w, http.StatusBadRequest, ErrorResponse{Error: WireValidationError, Details: details})
+		return
+	}
+
+	// Serialize against create/dedup writes and other assignment updates.
+	s.dedup.DeliverLock().Lock()
+	defer s.dedup.DeliverLock().Unlock()
+
+	entry, err := s.lookupAssignmentEntry(r, &req)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: WireGoMoneyError, Details: []string{"assignment lookup failed"}})
+		return
+	}
+	if entry == nil || entry.GomoneyTxnId == "" {
+		writeJSON(w, http.StatusNotFound, ErrorResponse{Error: WireValidationError, Details: []string{"recorded transaction not found"}})
+		return
+	}
+
+	gomoneyTxnID, err := strconv.ParseInt(entry.GomoneyTxnId, 10, 64)
+	if err != nil || gomoneyTxnID <= 0 {
+		writeJSON(w, http.StatusInternalServerError, ErrorResponse{Error: WireGoMoneyError, Details: []string{"invalid Go Money transaction id"}})
+		return
+	}
+
+	existing, err := s.client.GetTransactionByID(r.Context(), gomoneyTxnID)
+	if err != nil {
+		status, body := classifyGoMoneyError(err)
+		writeJSON(w, status, body)
+		s.log.Request("PUT /v1/transactions/assignment", req.Fingerprint, fmt.Sprintf("http=%d", status), s.now().Sub(start))
+		return
+	}
+	baseRequest, err := createRequestFromExisting(existing)
+	if err != nil {
+		status, body := classifyGoMoneyError(err)
+		writeJSON(w, status, body)
+		return
+	}
+
+	if req.DestinationAccountId != nil {
+		accounts, accountsErr := s.client.ListAccounts(r.Context())
+		if accountsErr != nil {
+			status, body := classifyGoMoneyError(accountsErr)
+			writeJSON(w, status, body)
+			s.log.Request("PUT /v1/transactions/assignment", req.Fingerprint, fmt.Sprintf("http=%d", status), s.now().Sub(start))
+			return
+		}
+		if _, found := findGoMoneyAccount(accounts, *req.DestinationAccountId); !found {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+				Error:   WireValidationError,
+				Details: []string{"destination Go Money account was not found"},
+			})
+			return
+		}
+		applyDestinationAccount(baseRequest, *req.DestinationAccountId)
+	}
+	if req.CategoryId != nil {
+		categories, categoryErr := s.client.ListCategories(r.Context())
+		if categoryErr != nil {
+			status, body := classifyGoMoneyError(categoryErr)
+			writeJSON(w, status, body)
+			s.log.Request("PUT /v1/transactions/assignment", req.Fingerprint, fmt.Sprintf("http=%d", status), s.now().Sub(start))
+			return
+		}
+		if !categoryExists(categories, *req.CategoryId) {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+				Error:   WireValidationError,
+				Details: []string{"Go Money category was not found"},
+			})
+			return
+		}
+		baseRequest.CategoryId = req.CategoryId
+	}
+
+	_, err = s.client.UpdateTransaction(r.Context(), &transactionsv1.UpdateTransactionRequest{
+		Id:          gomoneyTxnID,
+		Transaction: baseRequest,
+	})
+	if err != nil {
+		status, body := classifyGoMoneyError(err)
+		writeJSON(w, status, body)
+		s.log.Request("PUT /v1/transactions/assignment", req.Fingerprint, fmt.Sprintf("http=%d", status), s.now().Sub(start))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, AssignmentUpdateResponse{Status: "updated", GomoneyTxnId: entry.GomoneyTxnId})
+	s.log.Request("PUT /v1/transactions/assignment", req.Fingerprint, "updated", s.now().Sub(start))
+}
+
+func validateAssignmentUpdate(req *AssignmentUpdateRequest) []string {
+	var details []string
+	if len(req.Fingerprint) != 64 {
+		details = append(details, "fingerprint must be 64 hexadecimal characters")
+	} else if _, err := hex.DecodeString(req.Fingerprint); err != nil {
+		details = append(details, "fingerprint must be 64 hexadecimal characters")
+	}
+	if req.DestinationAccountId != nil && *req.DestinationAccountId <= 0 {
+		details = append(details, "destinationAccountId must be a positive account id")
+	}
+	if req.CategoryId != nil && *req.CategoryId <= 0 {
+		details = append(details, "categoryId must be a positive category id")
+	}
+	return details
+}
+
+// lookupAssignmentEntry reuses the memo-update lookup semantics so exact,
+// cross-source, and duplicate-acked captures all resolve to one recorded
+// transaction (bridge-api.md).
+func (s *Server) lookupAssignmentEntry(r *http.Request, req *AssignmentUpdateRequest) (*DedupEntry, error) {
+	if req.GomoneyTxnId != "" {
+		entry, err := s.dedup.LookupGoMoneyTxnID(r.Context(), req.GomoneyTxnId)
+		if err != nil {
+			return entry, err
+		}
+		if entry != nil && (entry.Fingerprint == req.Fingerprint || assignmentIdentityMatches(entry, req)) {
+			return entry, nil
+		}
+	}
+	if entry, err := s.dedup.LookupExact(r.Context(), req.Fingerprint); err != nil || entry != nil {
+		return entry, err
+	}
+	txAt, err := time.Parse(time.RFC3339, req.TxAt)
+	if err != nil || req.Bank == "" || req.AccountHint == "" || req.Amount <= 0 {
+		return nil, nil
+	}
+	return s.dedup.LookupBucketWindow(
+		r.Context(),
+		req.Bank,
+		req.AccountHint,
+		req.Type,
+		normalizeDesc(req.Description),
+		req.Amount,
+		txAt.Unix(),
+	)
+}
+
+func assignmentIdentityMatches(entry *DedupEntry, req *AssignmentUpdateRequest) bool {
+	txAt, err := time.Parse(time.RFC3339, req.TxAt)
+	if err != nil {
+		return false
+	}
+	return entry.Bank == req.Bank &&
+		entry.AccountHint == req.AccountHint &&
+		entry.Type == req.Type &&
+		entry.Amount == req.Amount &&
+		entry.Desc == normalizeDesc(req.Description) &&
+		abs64(entry.TxUnix-txAt.Unix()) <= 120
+}
+
+// applyDestinationAccount sets the chosen Go Money destination account on the
+// create/update request for either transaction shape.
+func applyDestinationAccount(req *transactionsv1.CreateTransactionRequest, id int32) {
+	if expense := req.GetExpense(); expense != nil {
+		expense.DestinationAccountId = id
+	}
+	if income := req.GetIncome(); income != nil {
+		income.DestinationAccountId = id
+	}
+}
+
+func categoryExists(categories []GoMoneyCategory, id int32) bool {
+	for _, category := range categories {
+		if category.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
 func validateMemoUpdate(req *MemoUpdateRequest) []string {
 	var details []string
 	if len(req.Fingerprint) != 64 {
@@ -284,17 +510,41 @@ func titleWithMemo(baseTitle, memo string) string {
 func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, any) {
 	start := s.now()
 
+	// 005: currency is validated after trimming; keep the trimmed value so the
+	// mapped-account currency comparison sees the same code.
+	txn.Currency = strings.TrimSpace(txn.Currency)
+
 	if details := validateTransaction(txn); len(details) > 0 {
 		return http.StatusBadRequest, ErrorResponse{Error: WireValidationError, Details: details}
 	}
 
 	// Account mapping must resolve BEFORE any Go Money call
 	// (contracts/gomoney-integration.md — unmatched → 400 without calling).
-	mappedAccountID, ok := s.mappings.Resolve(txn.Bank, txn.AccountHint)
-	if !ok {
+	// A user-defined source sends an explicit accountId, which takes
+	// precedence over the (bank, accountHint) mapping (R7, FR-015).
+	mappedAccountID, mapped := s.mappings.Resolve(txn.Bank, txn.AccountHint)
+	if !mapped && txn.AccountId == nil {
 		return http.StatusBadRequest, ErrorResponse{
 			Error:   WireValidationError,
 			Details: []string{fmt.Sprintf("unmapped account: %s/%s", txn.Bank, txn.AccountHint)},
+		}
+	}
+	if txn.AccountId != nil && *txn.AccountId <= 0 {
+		return http.StatusBadRequest, ErrorResponse{
+			Error:   WireValidationError,
+			Details: []string{"accountId must be a positive account id"},
+		}
+	}
+	if txn.DestinationAccountId != nil && *txn.DestinationAccountId <= 0 {
+		return http.StatusBadRequest, ErrorResponse{
+			Error:   WireValidationError,
+			Details: []string{"destinationAccountId must be a positive account id"},
+		}
+	}
+	if txn.CategoryId != nil && *txn.CategoryId <= 0 {
+		return http.StatusBadRequest, ErrorResponse{
+			Error:   WireValidationError,
+			Details: []string{"categoryId must be a positive category id"},
 		}
 	}
 
@@ -340,6 +590,10 @@ func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, 
 	}
 
 	mappedAccount, ok := findGoMoneyAccount(accounts, mappedAccountID)
+	if txn.AccountId != nil {
+		// The bound source account takes precedence over the static mapping.
+		mappedAccount, ok = findGoMoneyAccount(accounts, *txn.AccountId)
+	}
 	if !ok {
 		return http.StatusBadRequest, ErrorResponse{
 			Error:   WireValidationError,
@@ -390,6 +644,33 @@ func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, 
 	if err != nil {
 		return http.StatusBadRequest, ErrorResponse{Error: WireValidationError, Details: []string{err.Error()}}
 	}
+
+	// Optional destination account / category chosen by the user (FR-017/018).
+	// Both must resolve in the server-provided catalogs, else 400.
+	if txn.DestinationAccountId != nil {
+		if _, found := findGoMoneyAccount(accounts, *txn.DestinationAccountId); !found {
+			return http.StatusBadRequest, ErrorResponse{
+				Error:   WireValidationError,
+				Details: []string{"destination Go Money account was not found"},
+			}
+		}
+		applyDestinationAccount(req, *txn.DestinationAccountId)
+	}
+	if txn.CategoryId != nil {
+		categories, categoryErr := s.client.ListCategories(ctx)
+		if categoryErr != nil {
+			s.log.Operation("gomoney.categories.list", txn.Fingerprint, "error", s.now().Sub(start))
+			return classifyGoMoneyError(categoryErr)
+		}
+		if !categoryExists(categories, *txn.CategoryId) {
+			return http.StatusBadRequest, ErrorResponse{
+				Error:   WireValidationError,
+				Details: []string{"Go Money category was not found"},
+			}
+		}
+		req.CategoryId = txn.CategoryId
+	}
+
 	baseTitle := req.Title
 	req.Title = titleWithMemo(req.Title, txn.Memo)
 
@@ -618,16 +899,22 @@ func extractTxnId(res *transactionsv1.CreateTransactionResponse) string {
 }
 
 // validateTransaction enforces the /v1/transactions payload rules
-// (contracts/bridge-http-api.md): amount > 0, currency IRR, fingerprint 64-hex,
-// enums, ISO-8601 txAt.
+// (005 contracts/bridge-api.md): amount > 0, currency non-empty with 1–16
+// letters/digits (NOT IRR-only — non-rial bound accounts send their own code;
+// the mapped-account currency-match check stays in deliver), fingerprint
+// 64-hex, enums, ISO-8601 txAt.
 func validateTransaction(txn *NormalizedTransaction) []string {
 	var details []string
 
 	if txn.Amount <= 0 {
 		details = append(details, "amount must be > 0")
 	}
-	if txn.Currency != "IRR" {
-		details = append(details, "currency must be IRR")
+	trimmedCurrency := strings.TrimSpace(txn.Currency)
+	switch {
+	case trimmedCurrency == "":
+		details = append(details, "currency is required")
+	case len(trimmedCurrency) > 16 || !isLettersDigits(trimmedCurrency):
+		details = append(details, "currency is invalid")
 	}
 	if txn.Type != TypeExpense && txn.Type != TypeIncome {
 		details = append(details, "type must be expense or income")
@@ -657,4 +944,16 @@ func validateTransaction(txn *NormalizedTransaction) []string {
 func isHex(s string) bool {
 	_, err := hex.DecodeString(s)
 	return err == nil
+}
+
+// isLettersDigits accepts ISO-like currency codes: 1–16 letters/digits.
+func isLettersDigits(s string) bool {
+	for _, r := range s {
+		isLetter := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		isDigit := r >= '0' && r <= '9'
+		if !isLetter && !isDigit {
+			return false
+		}
+	}
+	return len(s) > 0
 }

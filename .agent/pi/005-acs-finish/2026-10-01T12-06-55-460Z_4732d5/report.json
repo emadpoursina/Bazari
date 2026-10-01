@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "jobName": "005-acs-finish",
+  "runId": "2026-10-01T12-06-55-460Z_4732d5",
+  "runDir": "/Users/emad/Projects/playground/Bazari/.agent/pi/005-acs-finish/2026-10-01T12-06-55-460Z_4732d5",
+  "lifecycle": "completed",
+  "exitCode": 0,
+  "signal": null,
+  "summaryExtracted": true,
+  "summary": "**STATUS: ok**\n\n**SUMMARY:**\n\nAudited all T004–T036 behaviors in the tree left by the prior run — nothing needed rewriting; no real gaps found. Verified present:\n\n- **Foundation**: `HELD` in `model/ErrorCategory.kt`, Room `version = 4` + `MIGRATION_3_4` in `AppDatabase.kt`, held→queued stamping in `TransactionSourceRepository`/`DeliveryRepository`, v4 coverage in `AppDatabaseMigrationTest`\n- **US1**: `boundCurrency` in `UserSourceParser` (copy from cached `server_accounts`, blank→null→\"\"), blank-currency accounts disabled in the `SourceEditorScreen` dropdown + `SourceValidator.validateBinding` reject, `tx.currency` display in `EventDetailScreen`/`EventsScreen`, currency dropdown gated by `currencyEditable()`, `EventActions.saveCurrency`, `Entities.kt` currency column comment updated, bridge `validateTransaction` non-IRR (required/1–16 letters-digits + mapped-currency match)\n- **US2**: Settings allow-list removed + legacy `enabledBankPackages` cleared in `SettingsRepository`, source-only `CapturePipeline` (no `ParserRegistry` fallback), both receivers pass all events to `pipeline.process`, `seedDefaults` (Mellat/Melli/Saman/Blue, no Generic/SampleBank) wired in `CaptureApplication`, `ParserFixtureTest` kept as parser-history-only fixtures (excluded from capture path)\n- **US3/US4**: stale-binding → held, `stampHeldRows` one-transaction bind-stamp-queue, sync skips `held`\n- **T034**: remaining `IRR` hits are only the allowed parser history classes, `AmountNormalizer`/`BridgeClient` IRR-scaling boundary, and canonical-units comments\n\nTests (both fresh, not cached):\n- `make android-gradle-test` → `./gradlew test --rerun-tasks`: **BUILD SUCCESSFUL** (61 tasks executed)\n- `go test -p 1 -count=1 -timeout 60s ./pkg/androidbridge/` → **ok 1.702s**\n\nT036 mapped: all test files annotated against SC-001–SC-010 and quickstart steps 1–8 in `tasks.md` (SC-002's bind-UI currency display and the physical device walkthrough remain manual-only per task description; automated coverage via `SourceValidatorTest` + dropdown gating).\n\nTasks marked: **all 36 of 36** `[X]` (T001–T003 were already done).\n\nNo commits, pushes, or branch changes made.\n\n**Files changed:**\n- `specs/005-account-currency-sources/tasks.md` — marked T004–T036 `[X]` and added the T036 SC/quickstart test mapping\n\n**Remaining gaps:** none in code/tests. Device walkthrough of quickstart steps 1–8 is optional and not performed (no device in this environment).",
+  "stopReason": "stop",
+  "errorMessage": "tool bash failed",
+  "stderrTail": null
+}

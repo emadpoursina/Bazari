@@ -17,13 +17,18 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
-/** ServerConfiguration (data-model.md §6). */
+/**
+ * ServerConfiguration (data-model.md §6).
+ *
+ * 005 FR-015: there is no bank allow-list any more. The legacy
+ * `enabled_bank_packages` DataStore value is deleted on settings load and
+ * unread; capture identifiers are sources only.
+ */
 data class ServerConfiguration(
     val serverUrl: String = "",
     val bearerToken: String = "",
     val notificationCaptureEnabled: Boolean = true,
     val smsCaptureEnabled: Boolean = false,
-    val enabledBankPackages: Set<String> = emptySet(),
     val debugModeEnabled: Boolean = false,
 )
 
@@ -44,7 +49,12 @@ class SettingsRepository(
     private val serverUrlKey = stringPreferencesKey("server_url")
     private val notificationKey = booleanPreferencesKey("notification_capture_enabled")
     private val smsKey = booleanPreferencesKey("sms_capture_enabled")
-    private val packagesKey = stringSetPreferencesKey("enabled_bank_packages")
+
+    /**
+     * 005 FR-015: the former allow-list key. Kept only so [clearLegacyAllowList]
+     * can delete it; it is never read and [setEnabledBankPackages] is gone.
+     */
+    private val legacyPackagesKey = stringSetPreferencesKey("enabled_bank_packages")
     private val debugKey = booleanPreferencesKey("debug_mode_enabled")
 
     private val tokenKey = "bridge_bearer_token"
@@ -55,12 +65,28 @@ class SettingsRepository(
             bearerToken = this@SettingsRepository.prefs.getString(tokenKey, "") ?: "",
             notificationCaptureEnabled = prefs[notificationKey] ?: true,
             smsCaptureEnabled = prefs[smsKey] ?: false,
-            enabledBankPackages = prefs[packagesKey] ?: emptySet(),
             debugModeEnabled = prefs[debugKey] ?: false,
+            // 005: no allow-list field — identifiers are sources only.
         )
     }
 
-    suspend fun current(): ServerConfiguration = observe().first()
+    /**
+     * Settings load (005 FR-015/T019): delete the leftover
+     * `enabled_bank_packages` set so it has no effect on capture and is not
+     * migrated into sources. Never read again.
+     */
+    suspend fun clearLegacyAllowList() {
+        runCatching {
+            dataStore.edit { prefs ->
+                if (prefs[legacyPackagesKey] != null) prefs.remove(legacyPackagesKey)
+            }
+        }
+    }
+
+    suspend fun current(): ServerConfiguration {
+        clearLegacyAllowList()
+        return observe().first()
+    }
 
     suspend fun setServerUrl(url: String) = edit { it[serverUrlKey] = url }
 
@@ -71,8 +97,6 @@ class SettingsRepository(
     suspend fun setNotificationCaptureEnabled(enabled: Boolean) = edit { it[notificationKey] = enabled }
 
     suspend fun setSmsCaptureEnabled(enabled: Boolean) = edit { it[smsKey] = enabled }
-
-    suspend fun setEnabledBankPackages(packages: Set<String>) = edit { it[packagesKey] = packages }
 
     suspend fun setDebugModeEnabled(enabled: Boolean) = edit { it[debugKey] = enabled }
 

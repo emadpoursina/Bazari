@@ -45,7 +45,8 @@ const (
 
 // NormalizedTransaction mirrors the payload of `POST /v1/transactions`
 // (contracts/bridge-http-api.md). Raw message text never leaves the phone,
-// so there is no rawText field here.
+// so there is no rawText field here. The three optional id fields are additive
+// (notification-engine bridge-api.md); when absent, behavior is unchanged.
 type NormalizedTransaction struct {
 	Id            string `json:"id"`
 	SourceEventId string `json:"sourceEventId"`
@@ -59,16 +60,82 @@ type NormalizedTransaction struct {
 	Description   string `json:"description"`
 	Memo          string `json:"memo,omitempty"`
 	Fingerprint   string `json:"fingerprint"`
+
+	// AccountId, when present, is the server account the transaction is
+	// recorded against (a bound user source). It takes precedence over the
+	// (bank, accountHint) mapping lookup.
+	AccountId *int32 `json:"accountId,omitempty"`
+	// DestinationAccountId sets the Go Money destination account on creation.
+	DestinationAccountId *int32 `json:"destinationAccountId,omitempty"`
+	// CategoryId sets the Go Money category on creation.
+	CategoryId *int32 `json:"categoryId,omitempty"`
 }
 
-// GoMoneyAccount contains only the account fields the Android bridge needs for
-// account resolution. It deliberately excludes account names, balances, and
-// other user data returned by ListAccounts.
+// GoMoneyAccount contains the account fields the Android bridge needs for
+// account resolution plus the label/type projection used by the
+// `GET /v1/accounts` selector (notification-engine bridge-api.md). It still
+// excludes balances, notes, IBANs and every other user data field.
 type GoMoneyAccount struct {
 	ID        int32
 	Type      gomoneypbv1.AccountType
+	TypeName  string // lowercased Go Money account type, e.g. "expense"
+	Label     string // human-readable account name
 	Currency  string
 	IsDefault bool
+}
+
+// GoMoneyCategory contains only the category fields the selector needs.
+type GoMoneyCategory struct {
+	ID    int32
+	Label string
+}
+
+// AccountSummary is the minimal `GET /v1/accounts` projection.
+type AccountSummary struct {
+	Id        int32  `json:"id"`
+	Label     string `json:"label"`
+	Currency  string `json:"currency"`
+	Type      string `json:"type"`
+	IsDefault bool   `json:"isDefault"`
+}
+
+// AccountListResponse is the response body of `GET /v1/accounts`.
+type AccountListResponse struct {
+	Accounts []AccountSummary `json:"accounts"`
+}
+
+// CategorySummary is the minimal `GET /v1/categories` projection.
+type CategorySummary struct {
+	Id    int32  `json:"id"`
+	Label string `json:"label"`
+}
+
+// CategoryListResponse is the response body of `GET /v1/categories`.
+type CategoryListResponse struct {
+	Categories []CategorySummary `json:"categories"`
+}
+
+// AssignmentUpdateRequest sets/changes the destination account and/or category
+// of a transaction already recorded in Go Money (bridge-api.md
+// `PUT /v1/transactions/assignment`). Identity fields match the memo-update
+// lookup so exact/cross-source/duplicate-acked captures all resolve.
+type AssignmentUpdateRequest struct {
+	Fingerprint          string `json:"fingerprint"`
+	GomoneyTxnId         string `json:"gomoneyTxnId,omitempty"`
+	Bank                 string `json:"bank"`
+	AccountHint          string `json:"accountHint"`
+	Type                 string `json:"type"`
+	Amount               int64  `json:"amount"`
+	TxAt                 string `json:"txAt"`
+	Description          string `json:"description"`
+	DestinationAccountId *int32 `json:"destinationAccountId"`
+	CategoryId           *int32 `json:"categoryId"`
+}
+
+// AssignmentUpdateResponse confirms the assignment reached Go Money.
+type AssignmentUpdateResponse struct {
+	Status       string `json:"status"` // updated
+	GomoneyTxnId string `json:"gomoneyTxnId,omitempty"`
 }
 
 // GoMoneyCurrency contains the configured exchange-rate data the bridge needs
@@ -146,6 +213,7 @@ type ErrorResponse struct {
 type GoMoneyClient interface {
 	ListAccounts(ctx context.Context) ([]GoMoneyAccount, error)
 	ListCurrencies(ctx context.Context, ids []string) ([]GoMoneyCurrency, error)
+	ListCategories(ctx context.Context) ([]GoMoneyCategory, error)
 
 	CreateTransaction(
 		ctx context.Context,

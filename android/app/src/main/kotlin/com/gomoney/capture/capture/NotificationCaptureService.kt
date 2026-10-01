@@ -3,6 +3,9 @@ package com.gomoney.capture.capture
 import android.app.Notification
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import com.gomoney.capture.source.ParseErrorRepository
+import com.gomoney.capture.source.TransactionSourceRepository
+import com.gomoney.capture.source.UserSourceParser
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.DedupRepository
 import com.gomoney.capture.storage.DeliveryRepository
@@ -17,9 +20,10 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 
 /**
- * Notification capture (US1, T019, FR-001/002/003): filters by the
- * ServerConfiguration.enabledBankPackages allow-list, ignores all other
- * apps, and writes a RawEvent to Room BEFORE any processing.
+ * Notification capture (US1, T019, FR-001/002/003; 005 FR-013): writes a
+ * RawEvent through the source-only CapturePipeline — an event is considered
+ * only when an enabled TransactionSource claims its identifier/channel; there
+ * is no Settings allow-list and no shipped-parser fallback.
  */
 class NotificationCaptureService : android.service.notification.NotificationListenerService() {
 
@@ -42,6 +46,8 @@ class NotificationCaptureService : android.service.notification.NotificationList
                 TransactionSyncHelper.enqueueExpedited(context)
                 MemoPromptNotifier.show(context, tx)
             },
+            sourceRepository = TransactionSourceRepository(db.transactionSourceDao(), db.parseErrorDao(), db),
+            userSourceParser = UserSourceParser(ParseErrorRepository(db.parseErrorDao()), db.serverAccountDao()),
         )
         gate = CaptureGate(PlatformCapturePermission(context))
     }
@@ -49,8 +55,8 @@ class NotificationCaptureService : android.service.notification.NotificationList
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val pkg = sbn.packageName ?: return
 
-        // FR-001: only allow-listed packages are even considered; everything
-        // else is ignored without persisting anything.
+        // 005 FR-013/014: every event is passed to the pipeline; the source
+        // repository is the only admission gate (no allow-list, no parsers).
         val text = extractText(sbn) ?: return
         // Use the notification's own postTime (epoch millis) as the event
         // timestamp — safer than capture-time wall clock when delivery is

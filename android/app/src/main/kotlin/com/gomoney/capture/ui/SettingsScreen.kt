@@ -10,16 +10,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.gomoney.capture.capture.PlatformCapturePermission
@@ -37,9 +32,11 @@ import kotlinx.coroutines.launch
 /**
  * Settings screen (US4, T039): server URL + bearer token editors (stored
  * encrypted, FR-006), "Test connection" (FR-019) wired to BridgePing,
- * independent notification / SMS toggles (FR-017), an editable bank app
- * allow-list (FR-018) — explicit package-ID entry only, never auto-allowing
- * installed apps — and permission status display (FR-024).
+ * independent notification / SMS toggles (FR-017), and permission status
+ * display (FR-024).
+ *
+ * 005 FR-012: there is NO bank/package/sender allow-list here — capture
+ * identifiers are managed exclusively through Sources.
  */
 class SettingsViewModel(private val settings: SettingsRepository) : ViewModel() {
 
@@ -80,21 +77,10 @@ class SettingsViewModel(private val settings: SettingsRepository) : ViewModel() 
         }
     }
 
-    /** Explicit allow-list add (FR-018): user-typed package ID only. */
-    fun addPackage(packageId: String) {
-        val pkg = packageId.trim()
-        if (pkg.isEmpty()) return
-        viewModelScope.launch {
-            settings.setEnabledBankPackages(settings.current().enabledBankPackages + pkg)
-        }
-    }
-
-    /** Explicit allow-list remove (FR-018). */
-    fun removePackage(packageId: String) {
-        viewModelScope.launch {
-            settings.setEnabledBankPackages(settings.current().enabledBankPackages - packageId)
-        }
-    }
+    /**
+     * 005 FR-015: the Settings allow-list is removed entirely — identifiers
+     * are captured only via Sources, so there is nothing to add or remove here.
+     */
 
     fun setNotificationCapture(enabled: Boolean) = viewModelScope.launch { settings.setNotificationCaptureEnabled(enabled) }
 
@@ -111,8 +97,6 @@ fun SettingsScreen(
     connectionStatus: String,
 ) {
     val config by viewModel.config.collectAsState()
-    var newPackage by remember { mutableStateOf("") }
-    val newPackageValid = newPackage.trim().contains('.')
 
     Column(
         modifier = Modifier
@@ -146,52 +130,8 @@ fun SettingsScreen(
         ToggleRow("SMS capture", config.smsCaptureEnabled) { viewModel.setSmsCapture(it) }
         ToggleRow("Debug mode", config.debugModeEnabled) { viewModel.setDebugMode(it) }
 
-        Text(text = "Bank app allow-list (FR-018)", style = MaterialTheme.typography.titleSmall)
-        Text(
-            text = "Only explicitly listed package IDs are captured (e.g. com.samanpr.blu). " +
-                "Installed apps are never auto-allowed.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            OutlinedTextField(
-                value = newPackage,
-                onValueChange = { newPackage = it },
-                label = { Text("Package ID (e.g. com.samanpr.blu)") },
-                modifier = Modifier.weight(1f),
-                singleLine = true,
-                isError = newPackage.isNotBlank() && !newPackageValid,
-            )
-            Button(
-                onClick = {
-                    viewModel.addPackage(newPackage)
-                    newPackage = ""
-                },
-                enabled = newPackageValid,
-            ) {
-                Text("Add")
-            }
-        }
-        val packages = config.enabledBankPackages.sorted()
-        if (packages.isEmpty()) {
-            Text("(none configured)", style = MaterialTheme.typography.bodySmall)
-        } else {
-            packages.forEach { pkg ->
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(text = pkg, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    OutlinedButton(onClick = { viewModel.removePackage(pkg) }) {
-                        Text("Remove")
-                    }
-                }
-            }
-        }
+        // 005 FR-012: no bank/package/sender allow-list here. Capture
+        // identifiers are Sources only — see the Sources tab.
 
         Text(
             text = if (permission.isNotificationListenerAccessGranted()) {
