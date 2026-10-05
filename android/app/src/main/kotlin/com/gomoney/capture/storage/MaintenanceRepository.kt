@@ -14,6 +14,7 @@ class MaintenanceRepository(
     private val rawEventDao: RawEventDao,
     private val parseErrorDao: ParseErrorDao? = null,
     private val clock: () -> OffsetDateTime = { OffsetDateTime.now() },
+    private val notificationCaptureRecordDao: NotificationCaptureRecordDao? = null,
 ) {
 
     /** Clear sent (terminal) sources only; pending/failed and unsynced memos are preserved. */
@@ -24,8 +25,16 @@ class MaintenanceRepository(
 
     /** Clear everything, including queued and failed items. Associated
      *  normalized transactions and delivery records cascade from raw_events;
-     *  settings and dedup_cache are untouched. */
-    suspend fun clearAll(): Int = rawEventDao.deleteAll()
+     *  settings and dedup_cache are untouched.
+     *
+     *  006 research R8: the per-notification identity rows are deleted too,
+     *  so a later scan may re-create events for notifications still in the
+     *  shade; `clearProcessed()` deliberately leaves them alone so cleared
+     *  terminal events are never resurrected. */
+    suspend fun clearAll(): Int {
+        notificationCaptureRecordDao?.clearAll()
+        return rawEventDao.deleteAll()
+    }
 
     /** Enforce the parse-error retention cap (last 200 entries or 30 days). */
     suspend fun pruneParseErrors(): Int =

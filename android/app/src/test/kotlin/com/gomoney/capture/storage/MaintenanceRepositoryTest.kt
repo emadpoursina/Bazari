@@ -7,6 +7,7 @@ import com.gomoney.capture.model.ErrorCategory
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -30,6 +31,7 @@ class MaintenanceRepositoryTest {
         deliveryRepository = DeliveryRepository(db.deliveryRecordDao())
         maintenance = MaintenanceRepository(
             rawEventDao = db.rawEventDao(),
+            notificationCaptureRecordDao = db.notificationCaptureRecordDao(),
         )
     }
 
@@ -120,5 +122,44 @@ class MaintenanceRepositoryTest {
         assertEquals("sent", db.deliveryRecordDao().byId("memo-pending")?.state)
         assertEquals("cash for taxi", db.normalizedTransactionDao().byId("memo-pending")?.userMemo)
         assertTrue(db.rawEventDao().byId("memo-pending") != null)
+    }
+
+    /** 006 T031 / research R8: clearAll() also clears the identity rows. */
+    @Test
+    fun `clear all removes identity rows so a later scan may re-capture`() = runTest {
+        seed("clear-all-event")
+        seedIdentity("pkg|1|tag|0", eventId = "clear-all-event")
+
+        maintenance.clearAll()
+
+        assertEquals(0, db.notificationCaptureRecordDao().count())
+        // The notification is re-examinable: a later scan may re-create it.
+        assertNull(db.notificationCaptureRecordDao().byKey("pkg|1|tag|0"))
+    }
+
+    /** 006 T031 / research R8: clearProcessed() leaves identity rows alone. */
+    @Test
+    fun `clear processed keeps identity rows so cleared events are not resurrected`() = runTest {
+        seed("terminal-event")
+        deliveryRepository.transition("terminal-event", com.gomoney.capture.model.DeliveryState.SENDING)
+        deliveryRepository.transition("terminal-event", com.gomoney.capture.model.DeliveryState.SENT)
+        seedIdentity("pkg|2|tag|0", eventId = "terminal-event")
+
+        maintenance.clearProcessed()
+
+        val row = db.notificationCaptureRecordDao().byKey("pkg|2|tag|0")
+        assertEquals(NotificationCaptureRecord.STATE_RECORDED, row?.state)
+        assertEquals("terminal-event", row?.eventId)
+    }
+
+    private suspend fun seedIdentity(key: String, eventId: String) {
+        db.notificationCaptureRecordDao().insertIfAbsent(
+            NotificationCaptureRecord(
+                notificationKey = key,
+                eventId = eventId,
+                state = NotificationCaptureRecord.STATE_RECORDED,
+                updatedAt = "2026-10-05T10:00:00+03:30",
+            ),
+        )
     }
 }

@@ -195,3 +195,42 @@ data class ServerCategory(
     val label: String,
     val refreshedAt: String,
 )
+
+/**
+ * Per-notification identity guard (006 data-model.md §1, FR-003): at most one
+ * event ever per `StatusBarNotification.key`, across scans, real-time posts
+ * and in-place content updates (clarification Q1).
+ *
+ * - `notification_key` = `StatusBarNotification.key` (`package|id|tag|userId`);
+ *   stable for the life of one notification, never derived from content.
+ * - `event_id` = the `raw_events.id` this notification produced; NULL while
+ *   the row is `pending` (claimed, not yet processed).
+ * - `state` is exactly `pending` or `recorded` (validated below).
+ * - `updated_at` is ISO-8601 with offset, refreshed on every claim/commit.
+ *
+ * No foreign key to `raw_events` (research R8): `clearAll()` deletes these
+ * rows explicitly while `clearProcessed()` leaves them untouched.
+ */
+@Entity(tableName = "notification_capture_records")
+data class NotificationCaptureRecord(
+    @PrimaryKey
+    @ColumnInfo(name = "notification_key")
+    val notificationKey: String,
+    @ColumnInfo(name = "event_id")
+    val eventId: String? = null,
+    @ColumnInfo(name = "state")
+    val state: String,
+    @ColumnInfo(name = "updated_at")
+    val updatedAt: String,
+) {
+    init {
+        require(state == STATE_PENDING || state == STATE_RECORDED) {
+            "state must be 'pending' or 'recorded'"
+        }
+    }
+
+    companion object {
+        const val STATE_PENDING = "pending"
+        const val STATE_RECORDED = "recorded"
+    }
+}

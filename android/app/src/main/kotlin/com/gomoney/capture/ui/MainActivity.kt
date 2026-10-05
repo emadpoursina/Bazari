@@ -28,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import com.gomoney.capture.capture.PlatformCapturePermission
+import com.gomoney.capture.capture.ScanCoordinator
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.SettingsRepository
 import kotlinx.coroutines.launch
@@ -46,6 +47,10 @@ class MainActivity : ComponentActivity() {
         val db = AppDatabase.get(applicationContext)
         val settings = SettingsRepository(applicationContext)
         val permission = PlatformCapturePermission(applicationContext)
+
+        // 006 R1: the scan fallback needs an app context even before the
+        // listener service has created its handle.
+        ScanCoordinator.attach(applicationContext)
 
         setContent {
             MaterialTheme {
@@ -73,6 +78,9 @@ private fun AppTabs(
     val sourceEditorViewModel = remember { SourceEditorViewModel(db, settings) }
     val dashboardState by dashboardViewModel.state.collectAsStateWithLifecycleCompat()
     val eventsState by eventsViewModel.state.collectAsStateWithLifecycleCompat()
+    // 006 FR-005: the scan banner state is hoisted in ScanCoordinator so it
+    // never leaks across tab switches (research R6).
+    val scanState by ScanCoordinator.state.collectAsStateWithLifecycleCompat()
     val sourcesState by sourcesViewModel.state.collectAsStateWithLifecycleCompat()
     val editorAccounts by sourceEditorViewModel.accounts.collectAsStateWithLifecycleCompat()
     val editorCatalogState by sourceEditorViewModel.catalogState.collectAsStateWithLifecycleCompat()
@@ -88,6 +96,9 @@ private fun AppTabs(
     // halt reason is never stale when the user returns home.
     LaunchedEffect(selectedTab) {
         if (selectedTab == 0) dashboardViewModel.refreshConnection()
+        // 006 T025 / FR-005: leaving the Events tab consumes any shown
+        // banner; a scan finishing while hidden is consumed as Idle.
+        ScanCoordinator.eventsTabVisible = selectedTab == 1
     }
 
     Scaffold(
@@ -121,6 +132,10 @@ private fun AppTabs(
                     onClearAll = {
                         scope.launch { eventActions.clearAll() }
                     },
+                    // 006 FR-001/006: scan entry wired to the coordinator's
+                    // press-time permission check (PlatformCapturePermission).
+                    scanState = scanState,
+                    onScan = { ScanCoordinator.requestScan(permission) },
                 )
                 2 -> {
                     val source = editingSource

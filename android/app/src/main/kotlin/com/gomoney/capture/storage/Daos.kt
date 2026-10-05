@@ -308,6 +308,52 @@ interface ServerAccountDao {
     suspend fun count(): Int
 }
 
+/**
+ * Identity-guard storage for 006 FR-003 (contracts/notification-identity.md §2):
+ * insert-or-take-over a `pending` row, read by key, commit to the terminal
+ * `recorded` state, release (delete) when nothing was persisted, clear-all.
+ */
+@Dao
+interface NotificationCaptureRecordDao {
+    /** Insert a fresh claim; -1 when the key is already claimed (race backstop). */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfAbsent(record: NotificationCaptureRecord): Long
+
+    /**
+     * Stale take-over (60 s): refresh `updated_at` ONLY while the row is
+     * still `pending`, so a concurrently committed `recorded` row can never
+     * be reopened (contract rule 2). Returns 1 when the claim was taken.
+     */
+    @Query(
+        """UPDATE notification_capture_records
+            SET updated_at = :updatedAt
+            WHERE notification_key = :key AND state = 'pending'""",
+    )
+    suspend fun takeOverPending(key: String, updatedAt: String): Int
+
+    @Query("SELECT * FROM notification_capture_records WHERE notification_key = :key LIMIT 1")
+    suspend fun byKey(key: String): NotificationCaptureRecord?
+
+    /** Terminal: the notification produced [eventId] and may never produce another. */
+    @Query(
+        """UPDATE notification_capture_records
+            SET state = 'recorded', event_id = :eventId, updated_at = :updatedAt
+            WHERE notification_key = :key""",
+    )
+    suspend fun commit(key: String, eventId: String, updatedAt: String): Int
+
+    /** Delete the claim so the notification is re-examinable later. */
+    @Query("DELETE FROM notification_capture_records WHERE notification_key = :key")
+    suspend fun release(key: String): Int
+
+    /** MaintenanceRepository.clearAll(): identity history dies with the events. */
+    @Query("DELETE FROM notification_capture_records")
+    suspend fun clearAll(): Int
+
+    @Query("SELECT COUNT(*) FROM notification_capture_records")
+    suspend fun count(): Int
+}
+
 @Dao
 interface ServerCategoryDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
