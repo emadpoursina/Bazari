@@ -20,6 +20,9 @@ class EventActions(
     private val deliveryRepository = DeliveryRepository(db.deliveryRecordDao())
     private val maintenance = MaintenanceRepository(
         rawEventDao = db.rawEventDao(),
+        // 006 research R8: clearAll() also wipes the notification identity
+        // rows; clearProcessed() deliberately does not touch them.
+        notificationCaptureRecordDao = db.notificationCaptureRecordDao(),
     )
 
     /** Manual retry: FAILED → QUEUED, then expedited sync. */

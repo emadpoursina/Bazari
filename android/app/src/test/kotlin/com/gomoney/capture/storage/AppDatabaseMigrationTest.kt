@@ -16,6 +16,7 @@ import com.gomoney.capture.model.DeliveryState
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -165,7 +166,12 @@ class AppDatabaseMigrationTest {
 
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
             .allowMainThreadQueries()
-            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5,
+            )
             .build()
         try {
             val transaction = migrated.normalizedTransactionDao().byId(transactionId)
@@ -223,7 +229,12 @@ class AppDatabaseMigrationTest {
 
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
             .allowMainThreadQueries()
-            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5,
+            )
             .build()
         try {
             val transaction = migrated.normalizedTransactionDao().byId(transactionId)
@@ -303,7 +314,12 @@ class AppDatabaseMigrationTest {
 
         val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
             .allowMainThreadQueries()
-            .addMigrations(AppDatabase.MIGRATION_1_2, AppDatabase.MIGRATION_2_3, AppDatabase.MIGRATION_3_4)
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5,
+            )
             .build()
         try {
             val transaction = migrated.normalizedTransactionDao().byId(transactionId)
@@ -316,6 +332,62 @@ class AppDatabaseMigrationTest {
             assertEquals("held", record?.state)
             // The v4 state machine reads it back as HELD.
             assertEquals(DeliveryState.HELD, record?.deliveryStateOf())
+        } finally {
+            migrated.close()
+            context.deleteDatabase(name)
+        }
+    }
+
+    /**
+     * 006 T012: a v4 database migrates to v5 creating the
+     * `notification_capture_records` identity table while existing rows and
+     * the v4 state machine survive untouched.
+     */
+    @Test
+    fun `version four migrates to v5 creating notification capture records`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val name = "scan-identity-migration-${UUID.randomUUID()}.db"
+        val eventId = "v4-event"
+        val timestamp = "2026-10-05T10:00:00+03:30"
+
+        val v4 = Room.databaseBuilder(context, LegacyV4AppDatabase::class.java, name)
+            .allowMainThreadQueries()
+            .build()
+        v4.rawEventDao().insert(
+            RawEvent(eventId, "notification", "pkg", null, null, "message", timestamp, timestamp),
+        )
+        v4.close()
+
+        val migrated = Room.databaseBuilder(context, AppDatabase::class.java, name)
+            .allowMainThreadQueries()
+            .addMigrations(
+                AppDatabase.MIGRATION_1_2,
+                AppDatabase.MIGRATION_2_3,
+                AppDatabase.MIGRATION_3_4,
+                AppDatabase.MIGRATION_4_5,
+            )
+            .build()
+        try {
+            // The migration created the identity table: it exists, is empty
+            // and is writable with the exact v5 column shape.
+            val dao = migrated.notificationCaptureRecordDao()
+            assertEquals(0, dao.count())
+            val inserted = dao.insertIfAbsent(
+                NotificationCaptureRecord(
+                    notificationKey = "pkg|1|tag|0",
+                    eventId = null,
+                    state = NotificationCaptureRecord.STATE_PENDING,
+                    updatedAt = timestamp,
+                ),
+            )
+            assertTrue(inserted != -1L)
+            val row = dao.byKey("pkg|1|tag|0")
+            assertNotNull(row)
+            assertEquals(NotificationCaptureRecord.STATE_PENDING, row?.state)
+            assertEquals("pkg|1|tag|0", row?.notificationKey)
+
+            // Pre-existing v4 data survived the migration.
+            assertNotNull(migrated.rawEventDao().byId(eventId))
         } finally {
             migrated.close()
             context.deleteDatabase(name)
@@ -351,4 +423,28 @@ abstract class LegacyV3AppDatabase : RoomDatabase() {
 interface LegacyV3DeliveryRecordDao {
     @Insert
     suspend fun insert(record: DeliveryRecord)
+}
+
+/**
+ * v4 shape of the schema (same entities as v5 minus the 006 identity guard),
+ * used to exercise the 006 v4 → v5 migration (T012).
+ */
+@Database(
+    entities = [
+        RawEvent::class,
+        NormalizedTransaction::class,
+        DeliveryRecord::class,
+        DedupCache::class,
+        TransactionSource::class,
+        ParseErrorMessage::class,
+        ServerAccount::class,
+        ServerCategory::class,
+    ],
+    version = 4,
+    exportSchema = false,
+)
+abstract class LegacyV4AppDatabase : RoomDatabase() {
+    abstract fun rawEventDao(): RawEventDao
+    abstract fun normalizedTransactionDao(): NormalizedTransactionDao
+    abstract fun deliveryRecordDao(): DeliveryRecordDao
 }

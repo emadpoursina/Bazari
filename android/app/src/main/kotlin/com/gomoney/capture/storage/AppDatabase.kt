@@ -17,8 +17,9 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ParseErrorMessage::class,
         ServerAccount::class,
         ServerCategory::class,
+        NotificationCaptureRecord::class,
     ],
-    version = 4,
+    version = 5,
     exportSchema = false,
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -30,6 +31,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun parseErrorDao(): ParseErrorDao
     abstract fun serverAccountDao(): ServerAccountDao
     abstract fun serverCategoryDao(): ServerCategoryDao
+    abstract fun notificationCaptureRecordDao(): NotificationCaptureRecordDao
 
     companion object {
         @Volatile
@@ -41,9 +43,28 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "gomoney-capture.db",
-                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                     .build().also { instance = it }
             }
+
+        /**
+         * v4 → v5 (006-notification-scan-button data-model.md §1): adds the
+         * per-notification identity guard table. Pure CREATE TABLE — no
+         * existing table changes, `exportSchema = false` unchanged.
+         */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `notification_capture_records` (
+                        `notification_key` TEXT NOT NULL,
+                        `event_id` TEXT,
+                        `state` TEXT NOT NULL,
+                        `updated_at` TEXT NOT NULL,
+                        PRIMARY KEY(`notification_key`)
+                    )""",
+                )
+            }
+        }
 
         val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
