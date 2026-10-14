@@ -68,10 +68,30 @@ is_running() {
   [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null
 }
 
+# Single connect attempt with a hard ~1s cap. Bash's /dev/tcp has no timeout and
+# blocks ~75s per attempt against an unroutable address, which used to make
+# wait_tcp hang for tens of minutes when the target never came up.
+tcp_probe() {
+  local host=$1 port=$2
+  if command -v nc >/dev/null 2>&1; then
+    nc -z -G 1 "$host" "$port" >/dev/null 2>&1
+  else
+    (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null
+  fi
+}
+
+# wait_tcp HOST PORT LABEL [TRIES] [PID]
+# Pass PID so we bail out as soon as the process we are waiting for dies,
+# instead of burning every remaining attempt.
 wait_tcp() {
-  local host=$1 port=$2 label=$3 tries=${4:-60}
+  local host=$1 port=$2 label=$3 tries=${4:-60} pid=${5:-}
+  local attempt
   for ((attempt = 0; attempt < tries; attempt++)); do
-    if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      echo "!! $label exited during startup" >&2
+      return 1
+    fi
+    if tcp_probe "$host" "$port"; then
       return 0
     fi
     sleep 0.5
@@ -175,7 +195,7 @@ else
   STARTED_BACKEND=true
   echo "$BACKEND_PID" > "$BACKEND_PID_FILE"
 
-  if ! wait_tcp 127.0.0.1 "$GRPC_PORT" "backend"; then
+  if ! wait_tcp 127.0.0.1 "$GRPC_PORT" "backend" 60 "$BACKEND_PID"; then
     tail -n 20 "$RUN_DIR/backend.log" >&2
     exit 1
   fi
@@ -199,7 +219,7 @@ else
   echo "$FRONTEND_PID" > "../$FRONTEND_PID_FILE"
   popd >/dev/null
 
-  if ! wait_tcp 127.0.0.1 "$FRONTEND_PORT" "frontend" 160; then
+  if ! wait_tcp 127.0.0.1 "$FRONTEND_PORT" "frontend" 160 "$FRONTEND_PID"; then
     tail -n 30 "$RUN_DIR/frontend.log" >&2
     exit 1
   fi
@@ -243,7 +263,7 @@ else
   STARTED_BRIDGE=true
   echo "$BRIDGE_PID" > "$BRIDGE_PID_FILE"
 
-  if ! wait_tcp "$BRIDGE_HOST" "$BRIDGE_PORT" "android bridge" 30; then
+  if ! wait_tcp "$BRIDGE_HOST" "$BRIDGE_PORT" "android bridge" 30 "$BRIDGE_PID"; then
     tail -n 20 "$RUN_DIR/bridge.log" >&2
     exit 1
   fi
