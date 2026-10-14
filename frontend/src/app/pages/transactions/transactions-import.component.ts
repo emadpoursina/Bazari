@@ -309,10 +309,11 @@ export class TransactionsImportComponent implements OnInit {
     }
 
     getTransactionTitle(tx: Transaction): string {
-        if (tx.title) {
-            return tx.title;
+        const notes = tx.notes?.trim();
+        if (notes) {
+            return notes;
         }
-        return `Transaction #${tx.id || 'New'}`;
+        return `${this.getTransactionTypeLabel(tx.type)} ${this.formatAmount(tx.sourceAmount, tx.sourceCurrency)}`.trim();
     }
 
     getTransactionTypeLabel(type: number): string {
