@@ -163,6 +163,10 @@ interface DeliveryRecordDao {
     @Query("SELECT * FROM delivery_records WHERE state IN ('queued', 'failed') ORDER BY lastAttemptAt ASC, id ASC")
     suspend fun pendingForDelivery(): List<DeliveryRecord>
 
+    /** In-flight rows (orphaned-run recovery: see SyncEngine/Sending recovery). */
+    @Query("SELECT * FROM delivery_records WHERE state = 'sending'")
+    suspend fun sending(): List<DeliveryRecord>
+
     @Query("SELECT * FROM delivery_records WHERE state IN ('queued', 'failed') ORDER BY lastAttemptAt ASC, id ASC")
     fun observePending(): Flow<List<DeliveryRecord>>
 

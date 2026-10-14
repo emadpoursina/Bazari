@@ -153,4 +153,24 @@ class DeliveryRepository(
         deliveryRecordDao.upsert(updated)
         return updated
     }
+
+    /**
+     * Orphaned-SENDING recovery: a drain that dies between the QUEUED→SENDING
+     * transition and its terminal SENT/FAILED result parks the row in
+     * `sending` forever — [requeue] only accepts FAILED and the drain query
+     * (pendingForDelivery) only selects queued/failed. A row still SENDING
+     * with its last attempt older than [olderThan] is treated as orphaned
+     * (a real in-flight send is bounded by OkHttp's timeouts) and moved back
+     * to QUEUED so the next drain retries it. Returns the requeued row, or
+     * null when [id] is not stale in SENDING.
+     */
+    suspend fun requeueStaleSending(id: String, olderThan: OffsetDateTime): DeliveryRecord? {
+        val current = deliveryRecordDao.byId(id) ?: return null
+        if (current.deliveryStateOf() != DeliveryState.SENDING) return null
+        val lastAttempt = current.lastAttemptAt?.let { runCatching { OffsetDateTime.parse(it) }.getOrNull() }
+        if (lastAttempt != null && !lastAttempt.isBefore(olderThan)) return null
+        val updated = current.copy(state = DeliveryState.QUEUED.name.lowercase())
+        deliveryRecordDao.upsert(updated)
+        return updated
+    }
 }

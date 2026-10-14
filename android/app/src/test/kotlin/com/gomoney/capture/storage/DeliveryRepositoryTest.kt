@@ -164,4 +164,41 @@ class DeliveryRepositoryTest {
         assertEquals(DeliveryState.QUEUED, queued?.deliveryStateOf())
         assertEquals(0, queued?.attempts)
     }
+
+    // --- orphaned-SENDING recovery (interrupted drain runs) ---
+
+    @Test
+    fun `requeueStaleSending recovers an orphaned sending row`() = runTest {
+        seed(eventId)
+        repository.transition(eventId, DeliveryState.SENDING)
+        // Simulate a run killed mid-send an hour ago.
+        val dao = db.deliveryRecordDao()
+        dao.upsert(dao.byId(eventId)!!.copy(lastAttemptAt = OffsetDateTime.now().minusHours(1).toString()))
+
+        val requeued = repository.requeueStaleSending(eventId, OffsetDateTime.now().minusMinutes(5))
+
+        assertNotNull(requeued)
+        assertEquals("queued", requeued?.state)
+        // The terminal error from the interrupted run is preserved for the UI.
+        assertEquals("queued", dao.byId(eventId)?.state)
+    }
+
+    @Test
+    fun `requeueStaleSending leaves a fresh in-flight sending row untouched`() = runTest {
+        seed(eventId)
+        repository.transition(eventId, DeliveryState.SENDING) // stamps lastAttemptAt = now
+
+        val requeued = repository.requeueStaleSending(eventId, OffsetDateTime.now().minusMinutes(5))
+
+        assertNull(requeued) // still within the in-flight window
+        assertEquals("sending", db.deliveryRecordDao().byId(eventId)?.state)
+    }
+
+    @Test
+    fun `requeueStaleSending ignores rows that are not sending`() = runTest {
+        seed(eventId) // queued
+
+        assertNull(repository.requeueStaleSending(eventId, OffsetDateTime.now().minusMinutes(5)))
+        assertEquals("queued", db.deliveryRecordDao().byId(eventId)?.state)
+    }
 }

@@ -18,6 +18,8 @@ import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.DedupRepository
 import com.gomoney.capture.storage.DeliveryRepository
 import com.gomoney.capture.storage.SettingsRepository
+import java.time.Duration
+import java.time.OffsetDateTime
 import java.util.concurrent.TimeUnit
 
 /**
@@ -100,6 +102,16 @@ object SyncEngine {
         val txDao = db.normalizedTransactionDao()
         if (configs.none { it.serverUrl.isNotBlank() }) return
 
+        // Orphaned-SENDING recovery: a run killed between the SENDING
+        // transition and its terminal result parks rows in `sending`, which
+        // neither requeue nor pendingForDelivery ever touches again — the
+        // row would stay stuck showing a stale error forever. Requeue stale
+        // ones so the outbox self-heals on the next run.
+        val staleCutoff = OffsetDateTime.now().minus(STALE_SENDING_AFTER)
+        for (record in dao.sending()) {
+            deliveryRepository.requeueStaleSending(record.id, staleCutoff)
+        }
+
         // Auto-retry (FR-012): FAILED rows with retryable transient errors
         // (network/server, except unauthorized) are requeued to QUEUED so the
         // periodic worker drains them when the bridge is reachable again.
@@ -169,6 +181,14 @@ object SyncEngine {
         val bridge = BridgeClient()
         val dao = db.deliveryRecordDao()
         val txDao = db.normalizedTransactionDao()
+
+        // Orphaned-SENDING recovery, scoped to the selection only (007
+        // FR-004: unselected rows are never touched by this run).
+        val staleCutoff = OffsetDateTime.now().minus(STALE_SENDING_AFTER)
+        for (record in dao.sending()) {
+            if (record.id !in ids) continue
+            deliveryRepository.requeueStaleSending(record.id, staleCutoff)
+        }
 
         for (record in dao.pendingForDelivery()) {
             if (record.id !in ids) continue
@@ -356,6 +376,14 @@ object SyncEngine {
     }
 
     private fun connected() = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+
+    /**
+     * A SENDING row older than this is an orphan from an interrupted run:
+     * real sends are bounded by OkHttp's connect/read timeouts, so anything
+     * past a few minutes means the process died before the terminal
+     * SENT/FAILED transition was written.
+     */
+    private val STALE_SENDING_AFTER: Duration = Duration.ofMinutes(5)
 
     private const val UNIQUE_PERIODIC = "transaction-sync-periodic"
     private const val UNIQUE_EXPEDITED = "transaction-sync-expedited"

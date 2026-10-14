@@ -249,4 +249,61 @@ class TransactionSyncWorkerTest {
         assertEquals("/v1/transactions/memo", memoRequest.path)
         assertEquals("", JSONObject(memoRequest.body.readUtf8()).getString("memo"))
     }
+
+    // --- orphaned-SENDING recovery (a run killed between SENDING and its
+    // terminal result must not park the row in `sending` forever) ---
+
+    /** Backdate a row's last attempt so it counts as orphaned. */
+    private suspend fun backdateAttempt(id: String, by: java.time.Duration) {
+        val dao = db.deliveryRecordDao()
+        dao.upsert(dao.byId(id)!!.copy(lastAttemptAt = java.time.OffsetDateTime.now().minus(by).toString()))
+    }
+
+    @Test
+    fun `drain recovers a stale sending row and delivers it`() = runTest {
+        seedQueued("stale-1", "a".repeat(63) + "5")
+        deliveryRepository.transition("stale-1", DeliveryState.SENDING)
+        backdateAttempt("stale-1", java.time.Duration.ofHours(1))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"status":"created","gomoneyTxnId":11}"""))
+
+        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        assertEquals("sent", db.deliveryRecordDao().byId("stale-1")?.state)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `drain leaves a fresh sending row to its in-flight run`() = runTest {
+        seedQueued("fresh-1", "a".repeat(63) + "6")
+        deliveryRepository.transition("fresh-1", DeliveryState.SENDING) // attempt = now
+
+        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        assertEquals("sending", db.deliveryRecordDao().byId("fresh-1")?.state)
+        assertEquals(0, server.requestCount) // never re-sent under the in-flight run
+    }
+
+    @Test
+    fun `drainIds recovers only the selected orphaned rows`() = runTest {
+        seedQueued("sel-stale", "a".repeat(63) + "7")
+        seedQueued("other-stale", "a".repeat(63) + "8")
+        for (id in listOf("sel-stale", "other-stale")) {
+            deliveryRepository.transition(id, DeliveryState.SENDING)
+            backdateAttempt(id, java.time.Duration.ofHours(1))
+        }
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"status":"created","gomoneyTxnId":12}"""))
+
+        SyncEngine.drainIds(
+            db,
+            listOf(config),
+            deliveryRepository,
+            dedupRepository,
+            setOf("sel-stale"),
+        )
+
+        assertEquals("sent", db.deliveryRecordDao().byId("sel-stale")?.state)
+        // Unselected rows are never touched (007 FR-004).
+        assertEquals("sending", db.deliveryRecordDao().byId("other-stale")?.state)
+        assertEquals(1, server.requestCount)
+    }
 }
