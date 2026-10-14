@@ -59,6 +59,9 @@ fun EventDetailScreen(
     categories: List<ServerCategory> = emptyList(),
     onSaveAssignment: (String, Int?, Int?) -> Unit = { _, _, _ -> },
     onSaveCurrency: (String, String) -> Unit = { _, _ -> },
+    onBack: () -> Unit = {},
+    catalogUnavailable: Boolean = false,
+    onRefreshCatalogs: () -> Unit = {},
 ) {
     var destinationAccountId by remember(tx?.id) { mutableStateOf(tx?.destinationAccountId) }
     var categoryId by remember(tx?.id) { mutableStateOf(tx?.categoryId) }
@@ -70,6 +73,7 @@ fun EventDetailScreen(
         modifier = Modifier.fillMaxSize().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
+        OutlinedButton(onClick = onBack) { Text("Back to events") }
         Text(text = "Event detail", style = MaterialTheme.typography.titleLarge)
         // 005 FR-004: the transaction's own currency, never a rial constant;
         // unknown (blank) currency shows the bare amount.
@@ -103,6 +107,13 @@ fun EventDetailScreen(
         }
 
         Text(text = "Category", style = MaterialTheme.typography.labelLarge)
+        if (catalogUnavailable) {
+            Text(
+                "Category list unavailable — last known list shown",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            OutlinedButton(onClick = onRefreshCatalogs) { Text("Refresh categories") }
+        }
         Box {
             OutlinedButton(onClick = { categoryMenuOpen = true }) {
                 Text(categories.firstOrNull { it.id == categoryId }?.label ?: "Default")
@@ -153,6 +164,20 @@ fun EventDetailScreen(
         tx?.let { transaction ->
             Button(onClick = { onSaveAssignment(transaction.id, destinationAccountId, categoryId) }) {
                 Text("Save assignment")
+            }
+            if (transaction.assignmentSyncState == "pending") {
+                Text(
+                    "Category saved on this phone · waiting to sync",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            val chosenGone = transaction.categoryId != null &&
+                categories.none { it.id == transaction.categoryId }
+            if (chosenGone) {
+                Text(
+                    "The saved category is no longer on the server — pick a new one.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
 

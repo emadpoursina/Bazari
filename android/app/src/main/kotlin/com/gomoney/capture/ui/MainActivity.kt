@@ -73,7 +73,7 @@ private fun AppTabs(
     // changes (remembered once per composition, not per branch).
     val dashboardViewModel = remember { DashboardViewModel(db, settings, permission) }
     val eventsViewModel = remember { EventsViewModel(db) }
-    val settingsViewModel = remember { SettingsViewModel(settings) }
+    val settingsViewModel = remember { SettingsViewModel(settings, db) }
     val sourcesViewModel = remember { SourcesViewModel(db, settings) }
     val sourceEditorViewModel = remember { SourceEditorViewModel(db, settings) }
     val dashboardState by dashboardViewModel.state.collectAsStateWithLifecycleCompat()
@@ -92,10 +92,36 @@ private fun AppTabs(
     val eventActions = remember { EventActions(context, db) }
     val settingsConnectionStatus by settingsViewModel.connectionStatus.collectAsStateWithLifecycleCompat()
 
+    // 007: per-event category assignment — cached server catalog + detail nav.
+    val catalog = remember {
+        com.gomoney.capture.sync.CatalogRepository(db.serverAccountDao(), db.serverCategoryDao())
+    }
+    val catalogAccounts by catalog.observeAccounts().collectAsStateWithLifecycleCompat(initial = emptyList())
+    val catalogCategories by catalog.observeCategories().collectAsStateWithLifecycleCompat(initial = emptyList())
+    val catalogState by catalog.state.collectAsStateWithLifecycleCompat(
+        initial = com.gomoney.capture.sync.CatalogRepository.CatalogState(),
+    )
+    val recentTxs by db.normalizedTransactionDao().observeRecent(500)
+        .collectAsStateWithLifecycleCompat(initial = emptyList())
+    val recentDeliveries by db.deliveryRecordDao().observeRecent(500)
+        .collectAsStateWithLifecycleCompat(initial = emptyList())
+    var selectedTxId by remember { mutableStateOf<String?>(null) }
+    fun refreshCatalogs() {
+        scope.launch {
+            runCatching { catalog.refreshAll(settings.currentConfigs()) }
+        }
+    }
+    // Refresh the category list whenever the detail editor opens, so the
+    // drop-down never offers a stale server list.
+    LaunchedEffect(selectedTxId) {
+        if (selectedTxId != null) refreshCatalogs()
+    }
+
     // Fresh connection status every time the dashboard is opened, so the
     // halt reason is never stale when the user returns home.
     LaunchedEffect(selectedTab) {
         if (selectedTab == 0) dashboardViewModel.refreshConnection()
+        if (selectedTab != 1) selectedTxId = null
         // 006 T025 / FR-005: leaving the Events tab consumes any shown
         // banner; a scan finishing while hidden is consumed as Idle.
         ScanCoordinator.eventsTabVisible = selectedTab == 1
@@ -118,25 +144,58 @@ private fun AppTabs(
                     onRefreshConnection = { dashboardViewModel.refreshConnection() },
                     onSyncNow = { dashboardViewModel.syncNow(context) },
                 )
-                1 -> EventsScreen(
-                    state = eventsState,
-                    onRetry = { deliveryId ->
-                        scope.launch { eventActions.retry(deliveryId) }
-                    },
-                    onSaveMemo = { transactionId, memo ->
-                        scope.launch { eventActions.saveMemo(transactionId, memo) }
-                    },
-                    onClearProcessed = {
-                        scope.launch { eventActions.clearProcessed() }
-                    },
-                    onClearAll = {
-                        scope.launch { eventActions.clearAll() }
-                    },
-                    // 006 FR-001/006: scan entry wired to the coordinator's
-                    // press-time permission check (PlatformCapturePermission).
-                    scanState = scanState,
-                    onScan = { ScanCoordinator.requestScan(permission) },
-                )
+                1 -> {
+                    val detailId = selectedTxId
+                    if (detailId == null) {
+                        EventsScreen(
+                            state = eventsState,
+                            onRetry = { deliveryId ->
+                                scope.launch { eventActions.retry(deliveryId) }
+                            },
+                            onSaveMemo = { transactionId, memo ->
+                                scope.launch { eventActions.saveMemo(transactionId, memo) }
+                            },
+                            onClearProcessed = {
+                                scope.launch { eventActions.clearProcessed() }
+                            },
+                            onClearAll = {
+                                scope.launch { eventActions.clearAll() }
+                            },
+                            // 006 FR-001/006: scan entry wired to the coordinator's
+                            // press-time permission check (PlatformCapturePermission).
+                            scanState = scanState,
+                            onScan = { ScanCoordinator.requestScan(permission) },
+                            // 007: per-event category from the server list.
+                            categories = catalogCategories,
+                            onOpenDetail = { selectedTxId = it },
+                        )
+                    } else {
+                        val tx = recentTxs.firstOrNull { it.id == detailId }
+                        val record = recentDeliveries.firstOrNull { it.id == detailId }
+                        EventDetailScreen(
+                            tx = tx,
+                            record = record,
+                            config = dashboardState.config,
+                            onRetry = { deliveryId ->
+                                scope.launch { eventActions.retry(deliveryId) }
+                            },
+                            accounts = catalogAccounts,
+                            categories = catalogCategories,
+                            onSaveAssignment = { transactionId, destinationAccountId, categoryId ->
+                                scope.launch {
+                                    eventActions.saveAssignment(transactionId, destinationAccountId, categoryId)
+                                }
+                            },
+                            onSaveCurrency = { transactionId, currency ->
+                                scope.launch { eventActions.saveCurrency(transactionId, currency) }
+                            },
+                            onBack = { selectedTxId = null },
+                            catalogUnavailable = catalogState.categories ==
+                                com.gomoney.capture.sync.CatalogRepository.Status.UNAVAILABLE,
+                            onRefreshCatalogs = { refreshCatalogs() },
+                        )
+                    }
+                }
                 2 -> {
                     val source = editingSource
                     if (source == null) {
@@ -203,6 +262,10 @@ private fun AppTabs(
 @Composable
 private fun <T> kotlinx.coroutines.flow.StateFlow<T>.collectAsStateWithLifecycleCompat() =
     collectAsState()
+
+@Composable
+private fun <T> kotlinx.coroutines.flow.Flow<T>.collectAsStateWithLifecycleCompat(initial: T) =
+    collectAsState(initial = initial)
 
 private fun ComponentActivity.requestSyncNotifications() {
     if (Build.VERSION.SDK_INT < 33) return

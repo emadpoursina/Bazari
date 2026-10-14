@@ -49,7 +49,10 @@ import kotlinx.coroutines.launch
  * then the rest). Ping/sync try enabled endpoints in order and use the
  * first reachable one for the whole run.
  */
-class SettingsViewModel(private val settings: SettingsRepository) : ViewModel() {
+class SettingsViewModel(
+    private val settings: SettingsRepository,
+    private val db: com.gomoney.capture.storage.AppDatabase? = null,
+) : ViewModel() {
 
     val config: kotlinx.coroutines.flow.StateFlow<ServerConfiguration> =
         settings.observe().stateIn(
@@ -99,6 +102,19 @@ class SettingsViewModel(private val settings: SettingsRepository) : ViewModel() 
                 ping.ok && ping.gomoneyReachable -> "Bridge: connected$via"
                 ping.ok -> "Bridge error: up, but Go Money unreachable$via"
                 else -> "Bridge offline: unreachable"
+            }
+            // Every successful connection refreshes the server account +
+            // category caches so per-event selectors stay fresh (best-effort).
+            if (ping.ok && ping.gomoneyReachable) {
+                val database = db
+                if (database != null) {
+                    runCatching {
+                        com.gomoney.capture.sync.CatalogRepository(
+                            database.serverAccountDao(),
+                            database.serverCategoryDao(),
+                        ).refreshAll(configs)
+                    }
+                }
             }
         }
     }
