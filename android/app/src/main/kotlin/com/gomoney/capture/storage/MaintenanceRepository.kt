@@ -36,6 +36,12 @@ class MaintenanceRepository(
         return rawEventDao.deleteAll()
     }
 
+    /** 007 FR-005: delete only the selected events (cascade like clearAll). */
+    suspend fun deleteEvents(ids: Set<String>): Int {
+        if (ids.isEmpty()) return 0
+        return rawEventDao.deleteByIds(ids.toList())
+    }
+
     /** Enforce the parse-error retention cap (last 200 entries or 30 days). */
     suspend fun pruneParseErrors(): Int =
         parseErrorDao?.let { ParseErrorRepository(it, clock).prune() } ?: 0

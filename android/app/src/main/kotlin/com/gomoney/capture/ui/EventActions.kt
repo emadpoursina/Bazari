@@ -93,6 +93,45 @@ class EventActions(
     /** Clear all rows, including queued and failed items (requires user confirmation in the UI). */
     suspend fun clearAll(): Int = maintenance.clearAll()
 
+    /**
+     * 007 FR-005: delete only the selected events (raw cascade).
+     * Returns the deleted row count; empty selection is a no-op.
+     */
+    suspend fun deleteSelected(ids: Set<String>): Int {
+        if (ids.isEmpty()) return 0
+        return maintenance.deleteEvents(ids)
+    }
+
+    /**
+     * 007 FR-004: sync only the selected events. Selected FAILED rows are
+     * requeued to QUEUED; then a scoped drain pushes only [ids] (plus their
+     * pending memos/assignments). Unselected rows are never touched.
+     * Returns the number of selected failures requeued.
+     */
+    suspend fun syncSelected(ids: Set<String>): Int {
+        if (ids.isEmpty()) return 0
+        var requeued = 0
+        for (id in ids) {
+            if (deliveryRepository.requeue(id) != null) requeued++
+        }
+        val settings = SettingsRepository(context)
+        val configs = runCatching { settings.currentConfigs() }.getOrDefault(emptyList())
+        if (configs.any { it.serverUrl.isNotBlank() }) {
+            runCatching {
+                SyncEngine.drainIds(
+                    db,
+                    configs,
+                    deliveryRepository,
+                    com.gomoney.capture.storage.DedupRepository(db.dedupCacheDao()),
+                    ids,
+                )
+            }
+        }
+        // Follow-up for any memo/assignment still pending on the selection.
+        runCatching { SyncEngine.enqueueExpedited(context) }
+        return requeued
+    }
+
     private companion object {
         const val MAX_MEMO_LENGTH = 200
     }

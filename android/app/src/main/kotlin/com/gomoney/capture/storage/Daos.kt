@@ -36,6 +36,10 @@ interface RawEventDao {
      *  records cascade via their raw_events foreign keys (FR-022). */
     @Query("DELETE FROM raw_events")
     suspend fun deleteAll(): Int
+
+    /** 007: delete only the given events; children cascade like deleteAll. */
+    @Query("DELETE FROM raw_events WHERE id IN (:ids)")
+    suspend fun deleteByIds(ids: List<String>): Int
 }
 
 @Dao

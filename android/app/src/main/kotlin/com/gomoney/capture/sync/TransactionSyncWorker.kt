@@ -153,6 +153,70 @@ object SyncEngine {
     }
 
     /**
+     * 007 FR-004: scoped drain of only [ids]. Same per-item logic as [drain]
+     * but every stage is filtered to the selected set, so unselected rows are
+     * never requeued, transitioned, sent, or memo/assignment-synced by this run.
+     */
+    suspend fun drainIds(
+        db: AppDatabase,
+        configs: List<com.gomoney.capture.storage.ServerConfiguration>,
+        deliveryRepository: DeliveryRepository,
+        dedupRepository: DedupRepository,
+        ids: Set<String>,
+    ) {
+        if (ids.isEmpty()) return
+        if (configs.none { it.serverUrl.isNotBlank() }) return
+        val bridge = BridgeClient()
+        val dao = db.deliveryRecordDao()
+        val txDao = db.normalizedTransactionDao()
+
+        for (record in dao.pendingForDelivery()) {
+            if (record.id !in ids) continue
+            if (isAutoRetryable(record)) {
+                deliveryRepository.requeue(record.id)
+            }
+        }
+
+        var pending = dao.pendingForDelivery().filter { it.state == "queued" && it.id in ids }
+        while (pending.isNotEmpty()) {
+            val batch = pending.take(BridgeClient.BULK_MAX_ITEMS)
+            val useBulk = pending.size >= BridgeClient.BULK_MIN_ITEMS
+
+            for (record in batch) {
+                val tx = txDao.byId(record.id) ?: continue
+                val known = dedupRepository.lookup(tx.fingerprint)
+                if (known != null) {
+                    deliveryRepository.markDuplicateAcked(tx.id, "local dedup cache: ${known.outcome}")
+                    continue
+                }
+                deliveryRepository.transition(tx.id, DeliveryState.SENDING) ?: continue
+                if (useBulk) {
+                    sendBulkMapped(bridge, configs, batch, dao, deliveryRepository, dedupRepository, txDao)
+                    break
+                }
+                applyResult(bridge.sendWithFallback(configs, tx), tx, deliveryRepository, dedupRepository, txDao)
+            }
+
+            val next = dao.pendingForDelivery().filter { it.state == "queued" && it.id in ids }
+            if (next.size == pending.size && next == pending) break
+            pending = next
+        }
+
+        for (tx in txDao.pendingMemos()) {
+            if (tx.id !in ids) continue
+            val result = bridge.updateMemoWithFallback(configs, tx)
+            if (result.ok) txDao.markMemoSynced(tx.id, tx.userMemo)
+        }
+        for (tx in txDao.pendingAssignments()) {
+            if (tx.id !in ids) continue
+            val result = bridge.updateAssignmentWithFallback(configs, tx)
+            if (result.ok) {
+                txDao.markAssignmentSynced(tx.id, tx.destinationAccountId, tx.categoryId)
+            }
+        }
+    }
+
+    /**
      * Retryable without user action: transient network/server failures.
      * Validation/parse failures and unauthorized (wrong token) need a manual
      * fix, so they stay FAILED instead of looping forever.

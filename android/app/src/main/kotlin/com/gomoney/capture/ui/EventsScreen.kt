@@ -3,9 +3,10 @@ package com.gomoney.capture.ui
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,10 +14,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -118,6 +119,7 @@ class EventsViewModel(db: AppDatabase) : ViewModel() {
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), EventsState())
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun EventsScreen(
     state: EventsViewModel.EventsState,
@@ -131,8 +133,19 @@ fun EventsScreen(
     // 007: per-event category assignment opens the detail editor.
     categories: List<com.gomoney.capture.storage.ServerCategory> = emptyList(),
     onOpenDetail: (String) -> Unit = {},
+    // 007 FR-001/004/005: selective sync/delete operate on the selection only.
+    onSyncSelected: (Set<String>) -> Unit = {},
+    onDeleteSelected: (Set<String>) -> Unit = {},
 ) {
     var showClearAllDialog by remember { mutableStateOf(false) }
+    var showDeleteSelectedDialog by remember { mutableStateOf(false) }
+    // 007 FR-001/009: transient selection keyed by stable event ID.
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    // Prune IDs whose rows disappeared (deleted elsewhere / list refresh).
+    val liveIds = state.rows.map { it.txId }.toSet()
+    if (!liveIds.containsAll(selectedIds)) {
+        selectedIds = selectedIds.intersect(liveIds)
+    }
     if (showClearAllDialog) {
         AlertDialog(
             onDismissRequest = { showClearAllDialog = false },
@@ -154,6 +167,31 @@ fun EventsScreen(
             },
         )
     }
+    if (showDeleteSelectedDialog) {
+        val count = selectedIds.size
+        AlertDialog(
+            onDismissRequest = { showDeleteSelectedDialog = false },
+            title = { Text("Delete $count selected event(s)?") },
+            text = {
+                Text(
+                    "This permanently deletes the $count selected event(s), including any " +
+                        "queued or failed deliveries that have not reached Go Money. " +
+                        "Unselected events are kept. This cannot be undone.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val ids = selectedIds
+                    showDeleteSelectedDialog = false
+                    selectedIds = emptySet()
+                    onDeleteSelected(ids)
+                }) { Text("Delete selected") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteSelectedDialog = false }) { Text("Cancel") }
+            },
+        )
+    }
     val context = LocalContext.current
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(8.dp),
@@ -169,20 +207,50 @@ fun EventsScreen(
             }
         }
         item(key = "event-actions") {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    // Three controls must fit without clipping (FR-001).
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                OutlinedButton(onClick = onClearProcessed) { Text("Clear processed") }
-                OutlinedButton(onClick = { showClearAllDialog = true }) { Text("Clear all") }
-                OutlinedButton(
-                    onClick = onScan,
-                    // FR-008: the control shows progress and disables while running.
-                    enabled = scanState !is ScanUiState.Running,
-                ) { Text("Scan notifications") }
+                Text(
+                    text = "Selected ${selectedIds.size} / ${state.rows.size}",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                // 007 FR-007: wrapping bar — every control visible without
+                // horizontal scrolling or clipping on a 360dp phone.
+                FlowRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(onClick = { selectedIds = liveIds }) {
+                        Text("Select all")
+                    }
+                    OutlinedButton(
+                        onClick = { selectedIds = emptySet() },
+                        enabled = selectedIds.isNotEmpty(),
+                    ) {
+                        Text("Clear")
+                    }
+                    OutlinedButton(
+                        onClick = { onSyncSelected(selectedIds) },
+                        enabled = selectedIds.isNotEmpty(),
+                    ) {
+                        Text("Sync selected (${selectedIds.size})")
+                    }
+                    OutlinedButton(
+                        onClick = { showDeleteSelectedDialog = true },
+                        enabled = selectedIds.isNotEmpty(),
+                    ) {
+                        Text("Delete selected (${selectedIds.size})")
+                    }
+                    OutlinedButton(onClick = onClearProcessed) { Text("Clear processed") }
+                    OutlinedButton(onClick = { showClearAllDialog = true }) { Text("Clear all") }
+                    OutlinedButton(
+                        onClick = onScan,
+                        // FR-008: the control shows progress and disables while running.
+                        enabled = scanState !is ScanUiState.Running,
+                    ) { Text("Scan notifications") }
+                }
             }
         }
         // Contract §4: the action row (and scan control) render even when the
@@ -193,7 +261,17 @@ fun EventsScreen(
             }
         } else {
             items(state.rows, key = { it.txId }) { row ->
-                EventCard(row, onRetry, onSaveMemo, categories, onOpenDetail)
+                EventCard(
+                    row = row,
+                    onRetry = onRetry,
+                    onSaveMemo = onSaveMemo,
+                    categories = categories,
+                    onOpenDetail = onOpenDetail,
+                    selected = row.txId in selectedIds,
+                    onToggleSelected = { checked ->
+                        selectedIds = if (checked) selectedIds + row.txId else selectedIds - row.txId
+                    },
+                )
             }
         }
     }
@@ -296,13 +374,23 @@ private fun EventCard(
     onSaveMemo: (String, String) -> Unit,
     categories: List<com.gomoney.capture.storage.ServerCategory> = emptyList(),
     onOpenDetail: (String) -> Unit = {},
+    // 007 FR-001: per-event selection checkbox.
+    selected: Boolean = false,
+    onToggleSelected: (Boolean) -> Unit = {},
 ) {
     var editingMemo by remember(row.txId) { mutableStateOf(false) }
     var memoDraft by remember(row.txId, row.userMemo) { mutableStateOf(row.userMemo.orEmpty()) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
-            Row(modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = onToggleSelected,
+                )
                 Text(
                     // 005 FR-003/004: never a hardcoded rial label. Blank
                     // (unknown) currency shows the bare amount.
