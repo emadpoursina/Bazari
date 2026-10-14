@@ -57,7 +57,8 @@ fun DashboardScreen(
         }
         Text(
             text = when (state.connection) {
-                DashboardViewModel.ConnectionStatus.CONNECTED -> "Bridge: connected"
+                DashboardViewModel.ConnectionStatus.CONNECTED ->
+                    "Bridge: connected" + (state.activeEndpoint?.let { " via $it" } ?: "")
                 DashboardViewModel.ConnectionStatus.GO_MONEY_DOWN -> "Bridge error: up, but Go Money unreachable"
                 DashboardViewModel.ConnectionStatus.DISCONNECTED -> "Bridge offline: not configured/reachable"
                 DashboardViewModel.ConnectionStatus.UNKNOWN -> "Bridge: unknown (not tested)"

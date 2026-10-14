@@ -36,15 +36,15 @@ class TransactionSyncWorker(
     override suspend fun doWork(): Result {
         val db = AppDatabase.get(applicationContext)
         val settings = SettingsRepository(applicationContext)
-        val config = settings.current()
-        if (config.serverUrl.isBlank()) return Result.success()
+        val configs = settings.currentConfigs()
+        if (configs.none { it.serverUrl.isNotBlank() }) return Result.success()
 
         val dao = db.deliveryRecordDao()
         val pendingBefore = dao.pendingForDelivery().size
         val deliveryRepository = DeliveryRepository(dao)
         val dedupRepository = DedupRepository(db.dedupCacheDao())
 
-        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+        SyncEngine.drain(db, configs, deliveryRepository, dedupRepository)
 
         // Periodic maintenance: enforce the parse-error retention cap (FR-028).
         runCatching {
@@ -76,10 +76,25 @@ object SyncEngine {
         config: com.gomoney.capture.storage.ServerConfiguration,
         deliveryRepository: DeliveryRepository,
         dedupRepository: DedupRepository,
+    ) = drain(db, listOf(config), deliveryRepository, dedupRepository)
+
+    /**
+     * Ordered-fallback drain: [configs] are tried in order and the first
+     * reachable endpoint serves every call in this run (ping selection is
+     * implicit — each `*WithFallback` call walks the same order, so a dead
+     * first endpoint transparently falls to the next for sends, memos,
+     * assignments and bulk).
+     */
+    suspend fun drain(
+        db: AppDatabase,
+        configs: List<com.gomoney.capture.storage.ServerConfiguration>,
+        deliveryRepository: DeliveryRepository,
+        dedupRepository: DedupRepository,
     ) {
         val bridge = BridgeClient()
         val dao = db.deliveryRecordDao()
         val txDao = db.normalizedTransactionDao()
+        if (configs.none { it.serverUrl.isNotBlank() }) return
 
         // Auto-retry (FR-012): FAILED rows with retryable transient errors
         // (network/server, except unauthorized) are requeued to QUEUED so the
@@ -113,11 +128,11 @@ object SyncEngine {
                 if (useBulk) {
                     // Drain optimization for many queued items: the whole
                     // batch is sent once; per-item results mapped below.
-                    sendBulkMapped(bridge, config, batch, dao, deliveryRepository, dedupRepository, txDao)
+                    sendBulkMapped(bridge, configs, batch, dao, deliveryRepository, dedupRepository, txDao)
                     break
                 }
 
-                applyResult(bridge.send(config, tx), tx, deliveryRepository, dedupRepository, txDao)
+                applyResult(bridge.sendWithFallback(configs, tx), tx, deliveryRepository, dedupRepository, txDao)
             }
 
             val next = dao.pendingForDelivery().filter { it.state == "queued" }
@@ -129,8 +144,8 @@ object SyncEngine {
             pending = next
         }
 
-        syncPendingMemos(bridge, config, txDao)
-        syncPendingAssignments(bridge, config, txDao)
+        syncPendingMemos(bridge, configs, txDao)
+        syncPendingAssignments(bridge, configs, txDao)
     }
 
     /**
@@ -184,7 +199,7 @@ object SyncEngine {
 
     private suspend fun sendBulkMapped(
         bridge: BridgeClient,
-        config: com.gomoney.capture.storage.ServerConfiguration,
+        configs: List<com.gomoney.capture.storage.ServerConfiguration>,
         batch: List<com.gomoney.capture.storage.DeliveryRecord>,
         deliveryDao: com.gomoney.capture.storage.DeliveryRecordDao,
         deliveryRepository: DeliveryRepository,
@@ -201,7 +216,7 @@ object SyncEngine {
             txDao.byId(record.id)
         }
         if (txs.isEmpty()) return
-        val results = bridge.sendBulk(config, txs)
+        val results = bridge.sendBulkWithFallback(configs, txs)
         txs.forEachIndexed { index, tx ->
             val result = results.getOrNull(index) ?: return@forEachIndexed
             applyResult(result, tx, deliveryRepository, dedupRepository, txDao)
@@ -210,11 +225,11 @@ object SyncEngine {
 
     private suspend fun syncPendingMemos(
         bridge: BridgeClient,
-        config: com.gomoney.capture.storage.ServerConfiguration,
+        configs: List<com.gomoney.capture.storage.ServerConfiguration>,
         txDao: com.gomoney.capture.storage.NormalizedTransactionDao,
     ) {
         for (tx in txDao.pendingMemos()) {
-            val result = bridge.updateMemo(config, tx)
+            val result = bridge.updateMemoWithFallback(configs, tx)
             if (result.ok) txDao.markMemoSynced(tx.id, tx.userMemo)
         }
     }
@@ -225,11 +240,11 @@ object SyncEngine {
      */
     private suspend fun syncPendingAssignments(
         bridge: BridgeClient,
-        config: com.gomoney.capture.storage.ServerConfiguration,
+        configs: List<com.gomoney.capture.storage.ServerConfiguration>,
         txDao: com.gomoney.capture.storage.NormalizedTransactionDao,
     ) {
         for (tx in txDao.pendingAssignments()) {
-            val result = bridge.updateAssignment(config, tx)
+            val result = bridge.updateAssignmentWithFallback(configs, tx)
             if (result.ok) {
                 txDao.markAssignmentSynced(tx.id, tx.destinationAccountId, tx.categoryId)
             }

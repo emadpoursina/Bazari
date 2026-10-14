@@ -62,6 +62,12 @@ class BridgeClient(
 
     data class PingResult(val ok: Boolean, val gomoneyReachable: Boolean, val unauthorized: Boolean)
 
+    /** Ordered-fallback ping selection: the first reachable config + its result. */
+    data class PingSelection(val config: ServerConfiguration?, val result: PingResult, val index: Int = -1)
+
+    /** Reachable = the bridge answered (2xx with or without Go Money, or 401). */
+    fun isReachable(result: PingResult): Boolean = result.ok || result.unauthorized
+
     data class MemoUpdateResult(val ok: Boolean, val errorDetail: String?)
 
     /** Server account summary for the selectors (bridge-api.md GET /v1/accounts). */
@@ -84,6 +90,121 @@ class BridgeClient(
     )
 
     // --- public API ---
+
+    /**
+     * Ordered fallback ping: try configs in order (e.g. Tailscale, LAN,
+     * rest) and return the first reachable one. Reachable = [isReachable].
+     * Callers use `selection.config` for all subsequent sync calls in the run.
+     */
+    suspend fun pingFirstReachable(configs: List<ServerConfiguration>): PingSelection {
+        var last: PingResult = PingResult(false, false, false)
+        configs.forEachIndexed { index, config ->
+            if (config.serverUrl.isBlank()) return@forEachIndexed
+            val result = ping(config)
+            last = result
+            if (isReachable(result)) return PingSelection(config, result, index)
+        }
+        return PingSelection(null, last)
+    }
+
+    /**
+     * Ordered fallback send: try each endpoint until a terminal outcome
+     * (created/duplicate/validation_error). Network/server failures fail
+     * over to the next endpoint; the last failure is returned when none
+     * succeed. Local dedup on the bridge makes a post-timeout retry safe.
+     */
+    suspend fun sendWithFallback(
+        configs: List<ServerConfiguration>,
+        tx: NormalizedTransaction,
+    ): SendResult {
+        var last = SendResult.failure(ErrorCategory.NETWORK_ERROR, "no bridge endpoint configured")
+        for (config in configs) {
+            if (config.serverUrl.isBlank()) continue
+            val result = send(config, tx)
+            when (result.status) {
+                SendResult.Status.CREATED,
+                SendResult.Status.DUPLICATE,
+                SendResult.Status.VALIDATION_ERROR,
+                -> return result
+                SendResult.Status.NETWORK_ERROR,
+                SendResult.Status.SERVER_ERROR,
+                -> last = result
+            }
+        }
+        return last
+    }
+
+    /** Bulk fallback: fail over only when every item is retryable; any terminal item stops. */
+    suspend fun sendBulkWithFallback(
+        configs: List<ServerConfiguration>,
+        transactions: List<NormalizedTransaction>,
+    ): List<SendResult> {
+        var last: List<SendResult> =
+            transactions.map { SendResult.failure(ErrorCategory.NETWORK_ERROR, "no bridge endpoint configured") }
+        for (config in configs) {
+            if (config.serverUrl.isBlank()) continue
+            val results = sendBulk(config, transactions)
+            last = results
+            if (results.isEmpty()) continue
+            val anyTerminal = results.any {
+                it.status == SendResult.Status.CREATED ||
+                    it.status == SendResult.Status.DUPLICATE ||
+                    it.status == SendResult.Status.VALIDATION_ERROR
+            }
+            if (anyTerminal) return results
+        }
+        return last
+    }
+
+    suspend fun fetchAccountsWithFallback(configs: List<ServerConfiguration>): CatalogResult<AccountDto> {
+        var last: CatalogResult<AccountDto> = CatalogResult(emptyList(), ok = false)
+        for (config in configs) {
+            if (config.serverUrl.isBlank()) continue
+            val result = fetchAccounts(config)
+            if (result.ok) return result
+            last = result
+        }
+        return last
+    }
+
+    suspend fun fetchCategoriesWithFallback(configs: List<ServerConfiguration>): CatalogResult<CategoryDto> {
+        var last: CatalogResult<CategoryDto> = CatalogResult(emptyList(), ok = false)
+        for (config in configs) {
+            if (config.serverUrl.isBlank()) continue
+            val result = fetchCategories(config)
+            if (result.ok) return result
+            last = result
+        }
+        return last
+    }
+
+    suspend fun updateAssignmentWithFallback(
+        configs: List<ServerConfiguration>,
+        tx: NormalizedTransaction,
+    ): MemoUpdateResult {
+        var last = MemoUpdateResult(false, "no bridge endpoint configured")
+        for (config in configs) {
+            if (config.serverUrl.isBlank()) continue
+            val result = updateAssignment(config, tx)
+            if (result.ok) return result
+            last = result
+        }
+        return last
+    }
+
+    suspend fun updateMemoWithFallback(
+        configs: List<ServerConfiguration>,
+        tx: NormalizedTransaction,
+    ): MemoUpdateResult {
+        var last = MemoUpdateResult(false, "no bridge endpoint configured")
+        for (config in configs) {
+            if (config.serverUrl.isBlank()) continue
+            val result = updateMemo(config, tx)
+            if (result.ok) return result
+            last = result
+        }
+        return last
+    }
 
     suspend fun ping(config: ServerConfiguration): PingResult {
         val request = buildRequest(config, "POST", "/v1/ping", body("{}"))

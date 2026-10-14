@@ -102,7 +102,7 @@ class SourceEditorViewModel(
     /** Refresh the account list from the server; a failure keeps the cache. */
     fun refreshAccounts() {
         viewModelScope.launch {
-            catalog.refreshAccounts(settings.current())
+            catalog.refreshAccounts(settings.currentConfigs())
             _accounts.value = catalog.accounts()
         }
     }

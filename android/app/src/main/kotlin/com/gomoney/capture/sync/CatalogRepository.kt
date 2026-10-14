@@ -44,8 +44,12 @@ class CatalogRepository(
     suspend fun categories(): List<ServerCategory> = categoryDao.all()
 
     /** Refresh the account cache; returns false (and flags unavailable) on failure. */
-    suspend fun refreshAccounts(config: ServerConfiguration): Boolean {
-        val result = bridge.fetchAccounts(config)
+    suspend fun refreshAccounts(config: ServerConfiguration): Boolean =
+        refreshAccounts(listOf(config))
+
+    /** Ordered-fallback refresh: first reachable endpoint wins, cache kept otherwise. */
+    suspend fun refreshAccounts(configs: List<ServerConfiguration>): Boolean {
+        val result = bridge.fetchAccountsWithFallback(configs)
         if (!result.ok) {
             _state.update { it.copy(accounts = Status.UNAVAILABLE) }
             return false
@@ -68,8 +72,11 @@ class CatalogRepository(
     }
 
     /** Refresh the category cache; returns false (and flags unavailable) on failure. */
-    suspend fun refreshCategories(config: ServerConfiguration): Boolean {
-        val result = bridge.fetchCategories(config)
+    suspend fun refreshCategories(config: ServerConfiguration): Boolean =
+        refreshCategories(listOf(config))
+
+    suspend fun refreshCategories(configs: List<ServerConfiguration>): Boolean {
+        val result = bridge.fetchCategoriesWithFallback(configs)
         if (!result.ok) {
             _state.update { it.copy(categories = Status.UNAVAILABLE) }
             return false

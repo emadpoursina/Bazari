@@ -16,6 +16,8 @@ import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * ServerConfiguration (data-model.md §6).
@@ -23,6 +25,12 @@ import kotlinx.coroutines.flow.map
  * 005 FR-015: there is no bank allow-list any more. The legacy
  * `enabled_bank_packages` DataStore value is deleted on settings load and
  * unread; capture identifiers are sources only.
+ *
+ * Multiple-endpoint fallback: [serverUrl]/[bearerToken] is the FIRST
+ * reachable endpoint (lowest priority) when endpoints exist, else the
+ * legacy single URL. Sync/ping callers that need fallback must use
+ * [SettingsRepository.currentConfigs] + `BridgeClient.*WithFallback`
+ * instead of this single value.
  */
 data class ServerConfiguration(
     val serverUrl: String = "",
@@ -33,9 +41,32 @@ data class ServerConfiguration(
 )
 
 /**
+ * A single bridge connection endpoint (multiple-endpoint fallback).
+ *
+ * The phone tries enabled endpoints in [priority] order (lowest first —
+ * e.g. Tailscale first, then LAN, then the rest) and uses the first
+ * reachable one for all ping/sync calls in that run. Users CRUD these
+ * themselves in Settings; there are no built-in presets.
+ */
+data class BridgeEndpoint(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val name: String = "",
+    val url: String = "",
+    val bearerToken: String = "",
+    val enabled: Boolean = true,
+    val priority: Int = 0,
+)
+
+/**
  * Settings repository: toggles/URL/allow-list in Preferences DataStore, the
  * bearer token in EncryptedSharedPreferences (FR-006: no bank credentials
  * stored anywhere; only the user's own bridge token, encrypted at rest).
+ *
+ * Multiple endpoints: metadata (id/name/url/enabled/priority) lives as JSON
+ * in DataStore under [endpointsKey]; each endpoint's token lives in the
+ * encrypted prefs under `bridge_token_<id>` so tokens stay encrypted at
+ * rest. The legacy single `server_url` + `bridge_bearer_token` is migrated
+ * to one "Default" endpoint on first load and kept in sync for rollback.
  */
 class SettingsRepository(
     private val context: Context,
@@ -56,18 +87,33 @@ class SettingsRepository(
      */
     private val legacyPackagesKey = stringSetPreferencesKey("enabled_bank_packages")
     private val debugKey = booleanPreferencesKey("debug_mode_enabled")
+    private val endpointsKey = stringPreferencesKey("bridge_endpoints_json")
 
     private val tokenKey = "bridge_bearer_token"
 
-    fun observe(): Flow<ServerConfiguration> = dataStore.data.map { prefs ->
+    private fun tokenKeyFor(id: String) = "bridge_token_$id"
+
+    fun observe(): Flow<ServerConfiguration> = dataStore.data.map { stored ->
+        val endpoints = readEndpointsLocked(stored)
+        val first = endpoints.filter { it.enabled }.minByOrNull { it.priority }
         ServerConfiguration(
-            serverUrl = prefs[serverUrlKey] ?: "",
-            bearerToken = this@SettingsRepository.prefs.getString(tokenKey, "") ?: "",
-            notificationCaptureEnabled = prefs[notificationKey] ?: true,
-            smsCaptureEnabled = prefs[smsKey] ?: false,
-            debugModeEnabled = prefs[debugKey] ?: false,
-            // 005: no allow-list field — identifiers are sources only.
+            serverUrl = first?.url ?: (stored[serverUrlKey] ?: ""),
+            bearerToken = first?.bearerToken
+                ?: (this@SettingsRepository.prefs.getString(tokenKey, "") ?: ""),
+            notificationCaptureEnabled = stored[notificationKey] ?: true,
+            smsCaptureEnabled = stored[smsKey] ?: false,
+            debugModeEnabled = stored[debugKey] ?: false,
         )
+    }
+
+    /** All endpoints sorted by priority (lowest first), for the Settings CRUD list. */
+    fun observeEndpoints(): Flow<List<BridgeEndpoint>> = dataStore.data.map { stored ->
+        readEndpointsLocked(stored).sortedBy { it.priority }
+    }
+
+    /** Enabled endpoints sorted by priority — the order ping/sync tries them. */
+    fun observeEnabledEndpoints(): Flow<List<BridgeEndpoint>> = observeEndpoints().map { list ->
+        list.filter { it.enabled }
     }
 
     /**
@@ -85,13 +131,142 @@ class SettingsRepository(
 
     suspend fun current(): ServerConfiguration {
         clearLegacyAllowList()
+        migrateLegacyIfNeeded()
         return observe().first()
     }
 
-    suspend fun setServerUrl(url: String) = edit { it[serverUrlKey] = url }
+    /** Enabled endpoints in try-order; migrates the legacy single URL first. */
+    suspend fun currentEndpoints(): List<BridgeEndpoint> {
+        clearLegacyAllowList()
+        migrateLegacyIfNeeded()
+        return observeEnabledEndpoints().first()
+    }
+
+    /** All endpoints in try-order (including disabled), for Settings UI. */
+    suspend fun allEndpoints(): List<BridgeEndpoint> {
+        migrateLegacyIfNeeded()
+        return observeEndpoints().first()
+    }
+
+    /**
+     * Enabled endpoints mapped to [ServerConfiguration] (shared toggles +
+     * per-endpoint url/token) in try-order. Pass to
+     * `BridgeClient.*WithFallback` for ping/sync.
+     */
+    suspend fun currentConfigs(): List<ServerConfiguration> {
+        val base = current()
+        return currentEndpoints().map { endpoint ->
+            base.copy(serverUrl = endpoint.url, bearerToken = endpoint.bearerToken)
+        }
+    }
+
+    // --- CRUD ---
+
+    /** Add a user-defined endpoint; appended last (lowest precedence). */
+    suspend fun addEndpoint(name: String, url: String, token: String): BridgeEndpoint {
+        val existing = allEndpoints()
+        val endpoint = BridgeEndpoint(
+            id = java.util.UUID.randomUUID().toString(),
+            name = name.trim(),
+            url = url.trim().trimEnd('/'),
+            bearerToken = token,
+            enabled = true,
+            priority = (existing.maxOfOrNull { it.priority } ?: -1) + 1,
+        )
+        persistEndpoints(existing + endpoint)
+        return endpoint
+    }
+
+    /** Update name/url/token/enabled; null token leaves the stored token untouched. */
+    suspend fun updateEndpoint(
+        id: String,
+        name: String,
+        url: String,
+        token: String?,
+        enabled: Boolean,
+    ): BridgeEndpoint? {
+        val existing = allEndpoints()
+        val current = existing.firstOrNull { it.id == id } ?: return null
+        val updated = current.copy(
+            name = name.trim(),
+            url = url.trim().trimEnd('/'),
+            bearerToken = token ?: current.bearerToken,
+            enabled = enabled,
+        )
+        persistEndpoints(existing.map { if (it.id == id) updated else it })
+        return updated
+    }
+
+    suspend fun deleteEndpoint(id: String): Boolean {
+        val existing = allEndpoints()
+        if (existing.none { it.id == id }) return false
+        persistEndpoints(existing.filterNot { it.id == id })
+        runCatching { prefs.edit().remove(tokenKeyFor(id)).apply() }
+        return true
+    }
+
+    suspend fun setEndpointEnabled(id: String, enabled: Boolean): Boolean {
+        val existing = allEndpoints()
+        val current = existing.firstOrNull { it.id == id } ?: return false
+        if (current.enabled == enabled) return true
+        persistEndpoints(existing.map { if (it.id == id) it.copy(enabled = enabled) else it })
+        return true
+    }
+
+    /** Reorder by id list (index 0 = tried first). Unknown ids are ignored. */
+    suspend fun reorderEndpoints(idsInOrder: List<String>) {
+        val existing = allEndpoints()
+        val byId = existing.associateBy { it.id }
+        val ordered = idsInOrder.mapNotNull { byId[it] }
+        if (ordered.isEmpty()) return
+        val orderedIds = ordered.map { it.id }.toSet()
+        val rest = existing.filterNot { it.id in orderedIds }
+        persistEndpoints((ordered + rest).mapIndexed { index, endpoint -> endpoint.copy(priority = index) })
+    }
+
+    /** Move one step up (tried earlier) or down (tried later). Returns false when unmoved. */
+    suspend fun moveEndpoint(id: String, up: Boolean): Boolean {
+        val sorted = allEndpoints().sortedBy { it.priority }
+        val index = sorted.indexOfFirst { it.id == id }
+        if (index < 0) return false
+        val swapWith = if (up) index - 1 else index + 1
+        if (swapWith !in sorted.indices) return false
+        val reordered = sorted.toMutableList()
+        val tmp = reordered[index]
+        reordered[index] = reordered[swapWith]
+        reordered[swapWith] = tmp
+        reorderEndpoints(reordered.map { it.id })
+        return true
+    }
+
+    // --- legacy single-URL compat (writes go to the first endpoint when present) ---
+
+    suspend fun setServerUrl(url: String) {
+        val normalized = url.trim().trimEnd('/')
+        val existing = allEndpoints()
+        if (existing.isEmpty()) {
+            edit { it[serverUrlKey] = normalized }
+        } else {
+            val sorted = existing.sortedBy { it.priority }
+            val first = sorted.first()
+            persistEndpoints(sorted.map { if (it.id == first.id) it.copy(url = normalized) else it })
+            edit { it[serverUrlKey] = normalized }
+        }
+    }
 
     suspend fun setBearerToken(token: String) {
-        prefs.edit().putString(tokenKey, token).apply()
+        val existing = allEndpoints()
+        if (existing.isEmpty()) {
+            prefs.edit().putString(tokenKey, token).apply()
+        } else {
+            val first = existing.sortedBy { it.priority }.first()
+            val updated = existing.map { if (it.id == first.id) it.copy(bearerToken = token) else it }
+            // persistEndpoints writes each endpoint's token + metadata (and
+            // re-emits observeEndpoints); update the list first so the new
+            // token is not overwritten by the stale copy.
+            persistEndpoints(updated)
+            prefs.edit().putString(tokenKey, token).apply()
+        }
     }
 
     suspend fun setNotificationCaptureEnabled(enabled: Boolean) = edit { it[notificationKey] = enabled }
@@ -100,8 +275,69 @@ class SettingsRepository(
 
     suspend fun setDebugModeEnabled(enabled: Boolean) = edit { it[debugKey] = enabled }
 
+    // --- internals ---
+
     private suspend fun edit(block: (MutablePreferences) -> Unit) {
         dataStore.edit { block(it) }
+    }
+
+    private fun readEndpointsLocked(stored: Preferences): List<BridgeEndpoint> {
+        val raw = stored[endpointsKey] ?: return emptyList()
+        return runCatching {
+            val array = JSONArray(raw)
+            (0 until array.length()).mapNotNull { i ->
+                val obj = array.optJSONObject(i) ?: return@mapNotNull null
+                val id = obj.optString("id").ifBlank { return@mapNotNull null }
+                BridgeEndpoint(
+                    id = id,
+                    name = obj.optString("name", ""),
+                    url = obj.optString("url", "").trimEnd('/'),
+                    bearerToken = prefs.getString(tokenKeyFor(id), "") ?: "",
+                    enabled = obj.optBoolean("enabled", true),
+                    priority = obj.optInt("priority", i),
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    private suspend fun persistEndpoints(endpoints: List<BridgeEndpoint>) {
+        val sorted = endpoints.sortedBy { it.priority }
+        for (endpoint in sorted) {
+            prefs.edit().putString(tokenKeyFor(endpoint.id), endpoint.bearerToken).apply()
+        }
+        val array = JSONArray()
+        sorted.forEach { endpoint ->
+            array.put(
+                JSONObject()
+                    .put("id", endpoint.id)
+                    .put("name", endpoint.name)
+                    .put("url", endpoint.url)
+                    .put("enabled", endpoint.enabled)
+                    .put("priority", endpoint.priority),
+            )
+        }
+        dataStore.edit { it[endpointsKey] = array.toString() }
+    }
+
+    /**
+     * One-time migration: legacy single `server_url` becomes a "Default"
+     * endpoint so old installs keep working with the fallback chain.
+     */
+    private suspend fun migrateLegacyIfNeeded() {
+        val stored = dataStore.data.first()
+        if (!stored[endpointsKey].isNullOrBlank()) return
+        val legacyUrl = (stored[serverUrlKey] ?: "").trim().trimEnd('/')
+        if (legacyUrl.isBlank()) return
+        val legacyToken = prefs.getString(tokenKey, "") ?: ""
+        val endpoint = BridgeEndpoint(
+            id = java.util.UUID.randomUUID().toString(),
+            name = "Default",
+            url = legacyUrl,
+            bearerToken = legacyToken,
+            enabled = true,
+            priority = 0,
+        )
+        persistEndpoints(listOf(endpoint))
     }
 
     companion object {

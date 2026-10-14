@@ -32,6 +32,7 @@ class DashboardViewModel(
         val failed: Long = 0,
         val connection: ConnectionStatus = ConnectionStatus.UNKNOWN,
         val config: ServerConfiguration = ServerConfiguration(),
+        val activeEndpoint: String? = null,
         val banner: SyncBanner.Banner = SyncBanner.Banner(SyncBanner.Kind.ALL_CLEAR),
         val bannerMessage: String = SyncBanner.message(SyncBanner.Banner(SyncBanner.Kind.ALL_CLEAR)),
     )
@@ -40,13 +41,18 @@ class DashboardViewModel(
 
     private val connection = MutableStateFlow(ConnectionStatus.UNKNOWN)
 
+    /** Name of the endpoint that answered the last ping (null = none/unknown). */
+    private val activeEndpointName = MutableStateFlow<String?>(null)
+    val activeEndpoint: StateFlow<String?> = activeEndpointName
+
     val state: StateFlow<DashboardState> =
         kotlinx.coroutines.flow.combine(
             db.normalizedTransactionDao().observeRecent(500),
             db.deliveryRecordDao().observePending(),
             settings.observe(),
             connection,
-        ) { txs, pendingRows, config, connection ->
+            activeEndpointName,
+        ) { txs, pendingRows, config, connection, activeEndpoint ->
             val banner = SyncBanner.forPending(pendingRows)
             DashboardState(
                 capturedToday = txs.count { it.txAt.startsWith(today()) }.toLong(),
@@ -57,6 +63,7 @@ class DashboardViewModel(
                 failed = pendingRows.count { it.state == "failed" }.toLong(),
                 connection = connection,
                 config = config,
+                activeEndpoint = activeEndpoint,
                 banner = banner,
                 bannerMessage = SyncBanner.message(banner),
             )
@@ -65,15 +72,22 @@ class DashboardViewModel(
     /**
      * BridgePing-driven connection test (FR-019): updates the observed state
      * so the dashboard reflects connected/offline/error status.
+     * Ordered fallback: tries every enabled endpoint (Tailscale → LAN →
+     * rest) and reports the first reachable one.
      */
     fun refreshConnection() {
         viewModelScope.launch {
-            val config = settings.current()
-            if (config.serverUrl.isBlank()) {
+            val configs = settings.currentConfigs()
+            val endpoints = settings.currentEndpoints()
+            if (configs.none { it.serverUrl.isNotBlank() }) {
                 connection.value = ConnectionStatus.DISCONNECTED
                 return@launch
             }
-            val ping = BridgePing().ping(config)
+            val selection = BridgePing().pingFirstReachable(configs)
+            val ping = selection.result
+            // Surface which endpoint answered, for multi-endpoint setups.
+            activeEndpointName.value = selection.index.takeIf { it >= 0 }
+                ?.let { endpoints.getOrNull(it)?.name?.ifBlank { null } }
             connection.value = when {
                 // Unauthorized OR unreachable bridge → offline (GO_MONEY_DOWN
                 // only applies when the bridge answered but Go Money didn't).
@@ -99,4 +113,9 @@ class BridgePing {
 
     suspend fun ping(config: ServerConfiguration): com.gomoney.capture.sync.BridgeClient.PingResult =
         client.ping(config)
+
+    suspend fun pingFirstReachable(
+        configs: List<ServerConfiguration>,
+    ): com.gomoney.capture.sync.BridgeClient.PingSelection =
+        client.pingFirstReachable(configs)
 }
