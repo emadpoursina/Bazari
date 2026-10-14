@@ -8,7 +8,7 @@
 
 ## Summary
 
-Stop treating Iranian Rial as a global capture default, and stop using Settings as a second admission gate. When a source is bound to a Go Money account, that account’s currency (already returned by `GET /v1/accounts`) is shown next to the account and copied onto new captures. Unbound captures are held locally with no invented currency; binding later stamps still-held empty-currency rows and queues them. Currency is editable on the transaction screen only while the record is local and not yet delivered. Capture runs only through an enabled `TransactionSource` with a user template: the Settings bank allow-list is ignored/deleted, and shipped `ParserRegistry` parsers no longer run. Former built-in banks are seeded as editable sources. The bridge accepts the stored currency (not IRR-only) and still requires it to match the mapped bank account.
+Stop treating Iranian Rial as a global capture default, and stop using Settings as a second admission gate. When a source is bound to a Go Money account, that account’s currency (already returned by `GET /v1/accounts`) is shown next to the account and copied onto new captures. Unbound captures are held locally with no invented currency; binding later stamps still-held empty-currency rows and queues them. Currency is editable on the transaction screen only while the record is local and not yet delivered. Capture runs only through an enabled `TransactionSource` with a user template: the Settings bank allow-list is ignored/deleted, and shipped `ParserRegistry` parsers no longer run. No default sources are inserted: the app ships with an empty source list and former built-in banks are captured only if the user creates a source for them (005 amendment — default former-bank seeds removed). The bridge accepts the stored currency (not IRR-only) and still requires it to match the mapped bank account.
 
 ## Technical Context
 
@@ -18,7 +18,7 @@ Stop treating Iranian Rial as a global capture default, and stop using Settings 
 
 **Storage**: Android Room `gomoney-capture.db` (schema v3 today → v4). `normalized_transactions.currency` remains NOT NULL; empty string means “unknown / not yet stamped”. New delivery state `held`. Settings DataStore `enabledBankPackages` is unread and cleared. Bridge dedup SQLite unchanged. Go Money remains the account/currency source of truth.
 
-**Testing**: Android JUnit (pipeline, bind/stamp, hold/queue, currency edit, Settings allow-list gone, seeded sources, hardcoded-IRR UI gone); `make android-gradle-test`. Bridge `go test ./pkg/androidbridge` for non-IRR create validation and mapped-account currency match. Existing parser fixture tests that assume a live `ParserRegistry` in the capture path are retired or pointed at seeded-source templates.
+**Testing**: Android JUnit (pipeline, bind/stamp, hold/queue, currency edit, Settings allow-list gone, no default sources, hardcoded-IRR UI gone); `make android-gradle-test`. Bridge `go test ./pkg/androidbridge` for non-IRR create validation and mapped-account currency match. Existing parser fixture tests that assume a live `ParserRegistry` in the capture path are retired or pointed at user-source templates.
 
 **Target Platform**: Android phone (notification listener + optional SMS) and the existing local Android bridge (`cmd/android-bridge`)
 
@@ -33,7 +33,7 @@ Stop treating Iranian Rial as a global capture default, and stop using Settings 
 - Amount extraction stays on `AmountNormalizer`; IRR `/ 10` scaling stays at the bridge client boundary only.
 - Constitution is an unfilled template; de-facto gates are privacy, reuse, and no new credentials.
 
-**Scale/Scope**: Single user, single phone. A handful of sources (user-defined + a small seeded former-bank set). Account catalog in the tens. Mixed currencies (at least IRR + one other) on the same device.
+**Scale/Scope**: Single user, single phone. A handful of user-defined sources (no default set). Account catalog in the tens. Mixed currencies (at least IRR + one other) on the same device.
 
 ## Constitution Check
 
@@ -53,7 +53,7 @@ Stop treating Iranian Rial as a global capture default, and stop using Settings 
 
 ### Post-Phase 1 re-check
 
-Design does not add a third persistence store, a currencies REST endpoint, or a parser-to-regex compiler. Seeded former banks are ordinary `TransactionSource` rows. Bridge change is validation + existing mapped-account currency match (already implemented for create). Held state is one extra outbox value with a legal transition to `queued`. Privacy and reuse gates still pass.
+Design does not add a third persistence store, a currencies REST endpoint, or a parser-to-regex compiler. No default `TransactionSource` rows are inserted (former-bank seeds removed). Bridge change is validation + existing mapped-account currency match (already implemented for create). Held state is one extra outbox value with a legal transition to `queued`. Privacy and reuse gates still pass.
 
 ## Project Structure
 
@@ -76,7 +76,7 @@ specs/005-account-currency-sources/
 ```text
 android/app/src/main/kotlin/com/gomoney/capture/
 ├── capture/                 # CapturePipeline admission; receivers drop allow-list
-├── source/                  # UserSourceParser currency; seed former banks; bind stamp
+├── source/                  # UserSourceParser currency; bind stamp (no default seeds)
 ├── storage/                 # Room v4, DeliveryRepository held→queued
 ├── sync/                    # Sync skips held; BridgeClient already non-IRR-aware
 ├── ui/                      # Settings, source editor, events/detail currency
@@ -84,7 +84,7 @@ android/app/src/main/kotlin/com/gomoney/capture/
 
 android/app/src/test/kotlin/com/gomoney/capture/
 ├── capture/                 # Bound/unbound/hold/stamp/no-parser-fallback
-├── source/                  # Seed + bind validation
+├── source/                  # Bind validation
 ├── storage/                 # Currency empty, held transitions
 ├── sync/                    # Non-IRR create payload; held not delivered
 └── ui/                      # Allow-list gone; currency edit gating

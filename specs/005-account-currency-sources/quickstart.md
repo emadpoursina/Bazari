@@ -51,7 +51,7 @@ Open a `queued` or `held` event: currency dropdown works; changing it is what wo
 
 ### 7. No source → no capture; parsers off (SC-004, SC-010)
 
-Send a notification from a package that is not an enabled source (including something that used to be only on the Settings allow-list or only handled by a shipped parser). Zero new transactions. Capture of a former built-in bank works only if that seeded (or user) source exists, is enabled, and its template matches.
+Send a notification from a package that is not an enabled source (including something that used to be only on the Settings allow-list or only handled by a shipped parser). Zero new transactions. A fresh install contains no default sources at all — capture of a former built-in bank works only if a user-created source for it exists, is enabled, and its template matches.
 
 ### 8. Privacy (unchanged)
 

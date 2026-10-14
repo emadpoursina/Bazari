@@ -46,15 +46,15 @@ Legal additions: `held → queued`. No `held → sending`. Rebind of a source th
 
 **Alternatives considered**: Keep the list as a hidden extra gate (user explicitly wants it gone); auto-create sources from leftover packages (forbidden).
 
-## R6 — Shipped parsers do not run; former banks are seeded sources
+## R6 — Shipped parsers do not run; former banks are user-created sources (seeds removed)
 
 **Decision**: Production `CapturePipeline` has one capture path: resolve an **enabled** `TransactionSource` for `(identifier, channel)` with a user template → `UserSourceParser`. If none, ignore without persisting (`IGNORED_NOT_ALLOW_LISTED` can be renamed to `IGNORED_NO_SOURCE`). Do not call `ParserRegistry.select`. Wire `TransactionSourceRepository` + `UserSourceParser` in `NotificationCaptureService` and `SmsCaptureReceiver` (they currently construct a pipeline without those deps, so user sources would never run in the real app).
 
-Seed ordinary `TransactionSource` rows for former built-in banks (Mellat, Melli, Saman, Blue) — one row per `(package or SMS sender, channel)` that those parsers claimed — using fill-in-the-blank templates and keyword lists derived from existing fixtures/parser keywords. Insert only when that `(identifier, channel)` is absent so user edits are not overwritten. Do **not** seed `GenericParser` (it is a catch-all) or `SampleBankParser` (test-only). Parser classes may remain in the tree for historical unit tests; they must not be on the production capture path.
+**Amendment (default seeds removed)**: the app inserts no default sources. Ordinary `TransactionSource` rows for former built-in banks (Mellat, Melli, Saman, Blue) were previously seeded idempotently on `(identifier, channel)` at app startup; seeding has been removed, so a fresh install starts with an empty source list and only user-created sources exist. Capture of a former built-in bank therefore requires the user to create that source themselves. Parser classes may remain in the tree for historical unit tests; they must not be on the production capture path.
 
-**Rationale**: FR-013/014/021, SC-004/010. Templates cannot reproduce every parser heuristic (card-hint extraction, generic dual-signal). Fingerprints for user sources already use `bank=user` and `accountHint=source.identifier` (004). Seeding gives the user a starting source they can edit; it is not a promise of parser-parity.
+**Rationale**: FR-013/014/021, SC-004/010. Templates cannot reproduce every parser heuristic (card-hint extraction, generic dual-signal). Fingerprints for user sources already use `bank=user` and `accountHint=source.identifier` (004). The amendment reflects the product owner's requirement that nothing be added by default; the user opts in to whatever identifiers they want captured.
 
-**Alternatives considered**: Keep `ParserRegistry` as fallback (forbidden by clarify); compile parsers into regex at runtime (new complexity, still a shipped parser); require the user to recreate Mellat from scratch (worse UX, fails “exist in the app as sources”).
+**Alternatives considered**: Keep `ParserRegistry` as fallback (forbidden by clarify); compile parsers into regex at runtime (new complexity, still a shipped parser); seed former banks as editable sources (implemented, then removed — default rows were unwanted); require the user to recreate Mellat from scratch (now the actual behavior).
 
 ## R7 — Amount scaling stays IRR-only at the bridge client
 

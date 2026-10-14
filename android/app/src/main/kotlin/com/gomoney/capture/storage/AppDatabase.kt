@@ -81,9 +81,9 @@ abstract class AppDatabase : RoomDatabase() {
          * a semantic-only bump. `held` is a new wire value in the existing
          * TEXT `delivery_records.state` column and empty-string currency is
          * already valid TEXT on `normalized_transactions.currency`, so no
-         * table rewrite is required. Former-bank source seeding is idempotent
-         * and runs from app startup (TransactionSourceRepository.seedDefaults),
-         * not from SQL.
+         * table rewrite is required. No sources are seeded: the source list
+         * holds only user-created rows (005 amendment — default former-bank
+         * seeds removed).
          */
         val MIGRATION_3_4 = object : Migration(3, 4) {
             override fun migrate(db: SupportSQLiteDatabase) {

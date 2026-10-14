@@ -138,7 +138,7 @@ A user can correct currency on a captured transaction while it is still on the d
 - **FR-018**: Currency is not extracted from the message text in this version; the template still marks only direction and amount. Currency comes from the bound account (at capture or as a later stamp on a still-held unbound capture), unless the user edits it before delivery.
 - **FR-019**: Destination account and category assignment on a captured transaction remain as already specified; they MUST NOT change the transaction's currency.
 - **FR-020**: Duplicate prevention, local queueing, offline retry, and the rule that raw message text never leaves the device MUST continue to apply.
-- **FR-021**: App-shipped built-in bank parsers MUST NOT run. Former built-in banks MUST exist in the app as sources with user templates so those identifiers can still be captured without a shipped-parser fallback.
+- **FR-021**: App-shipped built-in bank parsers MUST NOT run. The app MUST NOT ship or insert any default sources: a fresh install starts with an empty source list, and only sources the user creates exist (005 amendment — default former-bank seeds removed). Former built-in bank identifiers can still be captured once the user creates and enables a source with a user template for them.
 - **FR-022**: The user MAY edit a captured transaction's currency on the transaction screen only while that transaction is still local and not yet delivered. After delivery, currency MUST NOT be editable on that screen.
 
 ### Key Entities
@@ -161,7 +161,7 @@ A user can correct currency on a captured transaction while it is still on the d
 - **SC-007**: A mixed test set with at least two currencies (rial and one other) records each capture against the correct bound-account currency with zero cross-source currency mix-ups.
 - **SC-008**: After binding a previously unbound source, 100% of tested still-held captures from that source that had no currency receive the bound account's currency and become eligible for delivery.
 - **SC-009**: In 100% of tested local undelivered transactions, currency can be edited on the transaction screen; in 100% of tested already-delivered transactions, currency cannot be edited there.
-- **SC-010**: With shipped parsers not running, 100% of tested captures from former built-in bank identifiers succeed only via an enabled source with a user template.
+- **SC-010**: With shipped parsers not running, 100% of tested captures from former built-in bank identifiers succeed only via an enabled source with a user template; a fresh install contains zero default sources, so such captures also require the user to have created that source first.
 
 ## Assumptions
 

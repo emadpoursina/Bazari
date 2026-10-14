@@ -26,7 +26,7 @@ import java.util.UUID
 /**
  * Cross-source dedup end-to-end (US5, T045), repointed for 005 source-only
  * capture (T026): shipped parsers no longer run, so cross-channel Mellat
- * captures come from two seeded sources (notification package + SMS sender).
+ * captures come from two test-defined sources (notification package + SMS sender).
  * Behavior change: each source produces `bank=user` with its own identifier as
  * the account hint, so the two rows carry DIFFERENT fingerprints and both stay
  * queued — the local exact-fingerprint short-circuit now applies only to
@@ -142,7 +142,7 @@ class CrossSourceDedupTest {
     }
 
     /**
-     * Cross-channel pair via seeded sources: both queue locally with distinct
+     * Cross-channel pair via two explicit sources: both queue locally with distinct
      * fingerprints (different source identifiers as account hints); the
      * ±2-min bucket-window bridge collapse (bank/hint based) no longer applies
      * across user sources — both rows remain queued for delivery.

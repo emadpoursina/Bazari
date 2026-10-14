@@ -55,6 +55,6 @@ Editing currency on `held` does not queue delivery. Assignment save must not wri
 
 Settings MUST NOT render or mutate a package/sender allow-list. Capture identifiers are sources only.
 
-## Seeded sources
+## Seeded sources (removed — 005 amendment)
 
-On first run after v4 (and idempotently thereafter), insert former built-in bank sources per [data-model.md](../data-model.md). Skip an `(identifier, channel)` that already exists. Users may edit these like any other source.
+No sources are inserted on install or app start. The `transaction_sources` table starts empty and holds only user-created rows; former built-in banks are captured only after the user creates a source for them. (The default former-bank seeds — Mellat/Melli/Saman/Blue — were previously implemented per [data-model.md](../data-model.md) and have been removed.)

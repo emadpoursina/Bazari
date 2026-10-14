@@ -45,7 +45,7 @@ Same table as 004. Additional rules:
 - Capture requires `enabled == true` and a valid user template. No `ParserRegistry` fallback.
 - Duplicate `(identifier, channel)` still unique.
 - Unbound (`boundAccountId == null`) remains a valid save.
-- Seeded former-bank rows are normal rows (user may edit, disable, or delete).
+- No default rows: the table starts empty on a fresh install and contains only user-created sources (005 amendment — former-bank seeds removed). Rows are normal rows (user may edit, disable, or delete).
 
 ### 4. Settings allow-list (removed)
 
@@ -95,16 +95,18 @@ sending → failed → queued
 
 ## Schema migration
 
-**v3 → v4**: no table rewrite required if `held` is only a new string in `delivery_records.state` and currency empty-string is already valid TEXT. Bump Room version so tests and `AppDatabaseMigrationTest` record the semantic change; migration can be a no-op SQL (`MIGRATION_3_4`) plus seed insert of former-bank sources (seed is idempotent on `(identifier, channel)` and may run from app startup rather than SQL).
+**v3 → v4**: no table rewrite required if `held` is only a new string in `delivery_records.state` and currency empty-string is already valid TEXT. Bump Room version so tests and `AppDatabaseMigrationTest` record the semantic change; migration is a no-op SQL (`MIGRATION_3_4`). No source seeding runs at migration or app startup (005 amendment — default former-bank seeds removed).
 
-Seeded sources (initial set; templates from existing fixtures/keywords):
+**Former seed set (removed)** — the sources below were previously inserted by `seedDefaults()` on app start; seeding has been removed, so nothing is inserted on install and deletions stick. The table is historical:
 
 | Name | Identifier | Channel |
 |---|---|---|
 | Mellat | `ir.mellat.mellatab` | notification |
 | Mellat SMS | `MELLAT` | sms |
 | Melli | `ir.bmi.mobilebank` | notification |
+| Melli SMS | `BMI` | sms |
 | Saman | `ir.sb24.saman` | notification |
+| Saman SMS | `SAMAN` | sms |
 | Blue | `com.samanpr.blu` | notification |
 
-(Plus each parser’s SMS sender if `supportedSources` includes one.) Do not seed Generic or SampleBank.
+Generic and SampleBank were never part of the set.

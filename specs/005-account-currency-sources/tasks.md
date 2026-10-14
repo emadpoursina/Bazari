@@ -4,7 +4,7 @@
 
 **Prerequisites**: plan.md (required), spec.md (required for user stories), research.md, data-model.md, contracts/
 
-**Tests**: Plan.md explicitly requires Android JUnit coverage (pipeline, bind/stamp, hold/queue, currency edit, allow-list gone, seeded sources, hardcoded-IRR UI gone) via `make android-gradle-test`, and bridge `go test ./pkg/androidbridge` for non-IRR create validation. Test tasks below update/extend existing suites; no new test framework needed.
+**Tests**: Plan.md explicitly requires Android JUnit coverage (pipeline, bind/stamp, hold/queue, currency edit, allow-list gone, no default sources, hardcoded-IRR UI gone) via `make android-gradle-test`, and bridge `go test ./pkg/androidbridge` for non-IRR create validation. Test tasks below update/extend existing suites; no new test framework needed.
 
 **Organization**: Tasks grouped by user story for independent implementation and testing.
 
@@ -64,7 +64,7 @@
 
 ## Phase 4: User Story 2 - Capture only from defined sources; drop the settings allow-list (Priority: P1)
 
-**Goal**: Sources are the only admission gate; Settings has no bank allow-list; shipped parsers never run; former built-in banks exist as editable seeded sources (FR-012–FR-017, FR-021).
+**Goal**: Sources are the only admission gate; Settings has no bank allow-list; shipped parsers never run; no default sources exist — the source list starts empty and holds only user-created rows (FR-012–FR-017, FR-021; 005 amendment — default former-bank seeds removed).
 
 **Independent Test**: Confirm Settings has no allow-list; capture via an enabled source with user template; confirm messages from non-source identifiers produce nothing, including former allow-list entries and former parser-only identifiers (spec.md US2; quickstart.md steps 1, 7).
 
@@ -74,10 +74,10 @@
 - [X] T019 [US2] Stop reading `ServerConfiguration.enabledBankPackages` as a capture gate and clear the leftover DataStore set on settings load in `android/app/src/main/kotlin/com/gomoney/capture/storage/SettingsRepository.kt` (no migration of entries into sources)
 - [X] T020 [US2] Replace the allow-list gate plus `ParserRegistry` fallback with source-only admission (enabled `TransactionSource` + user template via `UserSourceParser`, ignore-without-persist otherwise) in `android/app/src/main/kotlin/com/gomoney/capture/capture/CapturePipeline.kt`
 - [X] T021 [US2] Drop the allow-list membership test and pass every event to `pipeline.process` (keeping permission/toggle checks) in `android/app/src/main/kotlin/com/gomoney/capture/capture/NotificationCaptureService.kt` and `android/app/src/main/kotlin/com/gomoney/capture/capture/SmsCaptureReceiver.kt`, wiring `TransactionSourceRepository` + `UserSourceParser` into the pipeline
-- [X] T022 [P] [US2] Seed former built-in bank sources (Mellat, Melli, Saman, Blue per `specs/005-account-currency-sources/data-model.md` table) as ordinary idempotent `TransactionSource` rows on `(identifier, channel)` in `android/app/src/main/kotlin/com/gomoney/capture/source/TransactionSourceRepository.kt` (do not seed Generic or SampleBank)
+- [X] T022 [P] [US2] Seed former built-in bank sources (Mellat, Melli, Saman, Blue per `specs/005-account-currency-sources/data-model.md` table) as ordinary idempotent `TransactionSource` rows on `(identifier, channel)` in `android/app/src/main/kotlin/com/gomoney/capture/source/TransactionSourceRepository.kt` (do not seed Generic or SampleBank) — **later reversed by 005 amendment**: seeding (`seedDefaults()`, `DEFAULT_SEEDS`, `SeedSource`) was removed entirely; the app inserts no default sources
 - [X] T023 [P] [US2] Add pipeline test that non-source messages are ignored without persisting (including former allow-list and parser-only identifiers) in `android/app/src/test/kotlin/com/gomoney/capture/capture/` per plan.md Testing
 - [X] T024 [P] [US2] Add UI test that Settings renders no allow-list in `android/app/src/test/kotlin/com/gomoney/capture/ui/` per plan.md Testing
-- [X] T025 [P] [US2] Add seed test (former banks inserted once, user edits not overwritten) in `android/app/src/test/kotlin/com/gomoney/capture/source/` per plan.md Testing
+- [X] T025 [P] [US2] Add seed test (former banks inserted once, user edits not overwritten) in `android/app/src/test/kotlin/com/gomoney/capture/source/` per plan.md Testing — **later reversed by 005 amendment**: `SeedDefaultsTest` deleted along with the seeding it covered
 - [X] T026 [US2] Retire or repoint existing parser fixture tests that assume a live `ParserRegistry` in the capture path under `android/app/src/test/kotlin/com/gomoney/capture/` per plan.md Testing
 
 **Checkpoint**: User Stories 1 AND 2 both work independently — currency comes from bound accounts and only enabled sources capture (SC-003, SC-004, SC-010)
@@ -139,7 +139,7 @@
   - SC-007 mixed IRR + non-IRR captures coexist — `BoundAccountPipelineTest` + bridge `handlers_test.go` USD-accept/IRR-match cases (quickstart step 3)
   - SC-008 stamp-on-bind queues held rows — `BindStampTest`, `HeldNotDeliveredTest`, `DeliveryRepositoryTest` (quickstart step 4)
   - SC-009 currency editable only before delivery — `CurrencyEditGatingTest`, `EventActionsCurrencyTest` (quickstart step 6)
-  - SC-010 shipped parsers never run; former banks are seeded sources — `SeedDefaultsTest`, no `ParserRegistry` in the capture path (`CapturePipeline.kt` source-only admission), parser fixtures kept as history-only unit tests (quickstart step 7)
+  - SC-010 shipped parsers never run; captures require an enabled user source and no default sources are installed — no `ParserRegistry` in the capture path (`CapturePipeline.kt` source-only admission), parser fixtures kept as history-only unit tests (quickstart step 7); `SeedDefaultsTest` removed with seeding (005 amendment)
   - Quickstart step 8 (privacy, no raw text off-device) unchanged by this feature; covered by existing bridge privacy tests
   - Commands: `make android-gradle-test` → BUILD SUCCESSFUL; `go test -p 1 -count=1 -timeout 60s ./pkg/androidbridge/` → ok
 
@@ -220,7 +220,7 @@ With multiple developers:
 1. Team completes Setup + Foundational together
 2. Once Foundational is done:
    - Developer A: User Story 1 (currency copy + bridge)
-   - Developer B: User Story 2 (admission + seeding)
+   - Developer B: User Story 2 (admission; default seeding later removed)
 3. Then Developer A or B: User Story 3 (needs US1), then User Story 4 (needs US1/US3)
 4. Stories complete and integrate independently
 

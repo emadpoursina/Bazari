@@ -110,7 +110,7 @@ class CapturePipelineTest {
     ): TransactionSource {
         val source = TransactionSource(
             id = UUID.randomUUID().toString(),
-            name = "Seeded Bank",
+            name = "Test Bank",
             identifier = identifier,
             channel = channel,
             enabled = enabled,

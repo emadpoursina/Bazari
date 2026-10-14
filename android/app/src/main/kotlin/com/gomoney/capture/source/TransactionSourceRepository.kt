@@ -25,8 +25,9 @@ sealed interface SaveResult {
  * unique index as the race backstop (SC-009).
  *
  * 005-account-currency-sources (contracts/source-admission.md):
- *  - [seedDefaults] inserts the former built-in banks as ordinary sources,
- *    idempotently on `(identifier, channel)`; user edits are never overwritten.
+ *  - no default sources are seeded; the source list starts empty and holds
+ *    only user-created rows (005 amendment — default former-bank seeds
+ *    removed).
  *  - saving a source with a NEW bound account stamps its currency onto that
  *    source's still-held empty-currency rows and moves them `held → queued`
  *    in one local transaction (FR-011). Rows that already have a currency —
@@ -135,116 +136,4 @@ class TransactionSourceRepository(
         parseErrorDao.clearSource(id)
         return deleted > 0
     }
-
-    /**
-     * Seed the former built-in banks (005 T022, data-model.md §Schema
-     * migration) as ordinary `TransactionSource` rows. Idempotent on
-     * `(identifier, channel)`: an existing row — user-edited or not — is left
-     * exactly as the user made it. Generic and SampleBank are NOT seeded.
-     */
-    suspend fun seedDefaults(): Int {
-        val now = clock().toString()
-        var inserted = 0
-        for (seed in DEFAULT_SEEDS) {
-            val existingRow = sourceDao.byIdentifierAndChannel(seed.identifier, seed.channel)
-            if (existingRow != null) continue
-            try {
-                sourceDao.insert(
-                    TransactionSource(
-                        id = "seed-${seed.identifier}-${seed.channel}",
-                        name = seed.name,
-                        identifier = seed.identifier,
-                        channel = seed.channel,
-                        enabled = true,
-                        template = seed.template,
-                        incomeKeywords = seed.incomeKeywords,
-                        expenseKeywords = seed.expenseKeywords,
-                        createdAt = now,
-                        updatedAt = now,
-                    ),
-                )
-                inserted++
-            } catch (conflict: SQLiteConstraintException) {
-                // Unique-index race: another caller seeded it first.
-            }
-        }
-        return inserted
-    }
-
-    companion object {
-        /**
-         * Former built-in bank identifiers (data-model.md §Schema migration
-         * table, plus each parser's SMS sender). Templates are the shared
-         * `<direction> … مبلغ <amount> ریال` phrasing of those banks' real
-         * messages; Blue uses `ريال`. Generic and SampleBank are excluded.
-         */
-        internal val DEFAULT_SEEDS: List<SeedSource> = listOf(
-            SeedSource(
-                name = "Mellat",
-                identifier = "ir.mellat.mellatab",
-                channel = "notification",
-                template = "{direction} مبلغ {amount} ریال",
-                incomeKeywords = "واریز,واريز",
-                expenseKeywords = "خريد,خرید,برداشت",
-            ),
-            SeedSource(
-                name = "Mellat SMS",
-                identifier = "MELLAT",
-                channel = "sms",
-                template = "{direction} مبلغ {amount} ریال",
-                incomeKeywords = "واریز,واريز",
-                expenseKeywords = "خريد,خرید,برداشت",
-            ),
-            SeedSource(
-                name = "Melli",
-                identifier = "ir.bmi.mobilebank",
-                channel = "notification",
-                template = "{direction} مبلغ {amount} ریال",
-                incomeKeywords = "واریز,واريز",
-                expenseKeywords = "خريد,خرید,برداشت,انتقال",
-            ),
-            SeedSource(
-                name = "Melli SMS",
-                identifier = "BMI",
-                channel = "sms",
-                template = "{direction} مبلغ {amount} ریال",
-                incomeKeywords = "واریز,واريز",
-                expenseKeywords = "خريد,خرید,برداشت,انتقال",
-            ),
-            SeedSource(
-                name = "Saman",
-                identifier = "ir.sb24.saman",
-                channel = "notification",
-                template = "{direction} مبلغ {amount} ریال",
-                incomeKeywords = "واریز,واريز",
-                expenseKeywords = "خريد,خرید,برداشت",
-            ),
-            SeedSource(
-                name = "Saman SMS",
-                identifier = "SAMAN",
-                channel = "sms",
-                template = "{direction} مبلغ {amount} ریال",
-                incomeKeywords = "واریز,واريز",
-                expenseKeywords = "خريد,خرید,برداشت",
-            ),
-            SeedSource(
-                name = "Blue",
-                identifier = "com.samanpr.blu",
-                channel = "notification",
-                template = "{direction} {amount} ريال",
-                incomeKeywords = "واریز,واريز",
-                expenseKeywords = "خريد,خرید,برداشت",
-            ),
-        )
-    }
 }
-
-/** A former built-in bank to seed as a normal, editable source (005 T022). */
-data class SeedSource(
-    val name: String,
-    val identifier: String,
-    val channel: String,
-    val template: String,
-    val incomeKeywords: String,
-    val expenseKeywords: String,
-)
