@@ -63,6 +63,10 @@ data class EventRow(
     val memoSyncState: String = "synced",
     // 005 FR-004: the transaction's own currency; blank = unknown (no label).
     val currency: String = "",
+    // Per-event assignment (007): chosen destination/category + sync state.
+    val destinationAccountId: Int? = null,
+    val categoryId: Int? = null,
+    val assignmentSyncState: String = "synced",
 )
 
 class EventsViewModel(db: AppDatabase) : ViewModel() {
@@ -91,6 +95,9 @@ class EventsViewModel(db: AppDatabase) : ViewModel() {
                 userMemo = tx.userMemo,
                 memoSyncState = tx.memoSyncState,
                 currency = tx.currency,
+                destinationAccountId = tx.destinationAccountId,
+                categoryId = tx.categoryId,
+                assignmentSyncState = tx.assignmentSyncState,
             )
         }
         // Parse-error rows: delivery record without a normalized transaction.
@@ -121,6 +128,9 @@ fun EventsScreen(
     // 006 FR-001/005: scan control + inline banner (contracts/scan-coordination.md §4).
     scanState: ScanUiState = ScanUiState.Idle,
     onScan: () -> Unit = {},
+    // 007: per-event category assignment opens the detail editor.
+    categories: List<com.gomoney.capture.storage.ServerCategory> = emptyList(),
+    onOpenDetail: (String) -> Unit = {},
 ) {
     var showClearAllDialog by remember { mutableStateOf(false) }
     if (showClearAllDialog) {
@@ -183,7 +193,7 @@ fun EventsScreen(
             }
         } else {
             items(state.rows, key = { it.txId }) { row ->
-                EventCard(row, onRetry, onSaveMemo)
+                EventCard(row, onRetry, onSaveMemo, categories, onOpenDetail)
             }
         }
     }
@@ -284,6 +294,8 @@ private fun EventCard(
     row: EventRow,
     onRetry: (String) -> Unit,
     onSaveMemo: (String, String) -> Unit,
+    categories: List<com.gomoney.capture.storage.ServerCategory> = emptyList(),
+    onOpenDetail: (String) -> Unit = {},
 ) {
     var editingMemo by remember(row.txId) { mutableStateOf(false) }
     var memoDraft by remember(row.txId, row.userMemo) { mutableStateOf(row.userMemo.orEmpty()) }
@@ -309,6 +321,22 @@ private fun EventCard(
             Text(text = formatTime(row.txAt), style = MaterialTheme.typography.bodySmall)
             row.errorCategory?.let {
                 Text(text = "category: $it", style = MaterialTheme.typography.labelSmall)
+            }
+            // 007: chosen server category for this event (synced automatically).
+            if (row.amountMinor > 0L) {
+                val categoryLabel = row.categoryId?.let { id ->
+                    categories.firstOrNull { it.id == id }?.label
+                }
+                Text(
+                    text = "Event category: ${categoryLabel ?: "Default"}",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                if (row.assignmentSyncState == "pending") {
+                    Text(
+                        "Category saved on this phone · waiting to sync",
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
             }
 
             if (row.amountMinor > 0L) {
@@ -353,6 +381,11 @@ private fun EventCard(
             if (row.state == "failed") {
                 OutlinedButton(onClick = { onRetry(row.txId) }) {
                     Text("Retry delivery")
+                }
+            }
+            if (row.amountMinor > 0L) {
+                OutlinedButton(onClick = { onOpenDetail(row.txId) }) {
+                    Text("Set category")
                 }
             }
         }

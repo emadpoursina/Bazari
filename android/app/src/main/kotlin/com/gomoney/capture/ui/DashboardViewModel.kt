@@ -6,6 +6,7 @@ import com.gomoney.capture.capture.PlatformCapturePermission
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.ServerConfiguration
 import com.gomoney.capture.storage.SettingsRepository
+import com.gomoney.capture.sync.CatalogRepository
 import com.gomoney.capture.sync.SyncBanner
 import com.gomoney.capture.sync.SyncEngine
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -94,6 +95,15 @@ class DashboardViewModel(
                 ping.unauthorized || !ping.ok -> ConnectionStatus.DISCONNECTED
                 ping.gomoneyReachable -> ConnectionStatus.CONNECTED
                 else -> ConnectionStatus.GO_MONEY_DOWN
+            }
+            // Every successful connection refreshes the server account +
+            // category caches so per-event selectors stay fresh (best-effort:
+            // a failure keeps the last known lists).
+            if (connection.value == ConnectionStatus.CONNECTED) {
+                runCatching {
+                    CatalogRepository(db.serverAccountDao(), db.serverCategoryDao())
+                        .refreshAll(configs)
+                }
             }
         }
     }

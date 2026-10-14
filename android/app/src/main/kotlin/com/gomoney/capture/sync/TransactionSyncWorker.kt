@@ -44,6 +44,10 @@ class TransactionSyncWorker(
         val deliveryRepository = DeliveryRepository(dao)
         val dedupRepository = DedupRepository(db.dedupCacheDao())
 
+        // Every sync run implies a reachable bridge: refresh the server
+        // account + category caches first so per-event selectors stay fresh.
+        runCatching { SyncEngine.refreshCatalogs(db, configs) }
+
         SyncEngine.drain(db, configs, deliveryRepository, dedupRepository)
 
         // Periodic maintenance: enforce the parse-error retention cap (FR-028).
@@ -222,6 +226,20 @@ object SyncEngine {
             applyResult(result, tx, deliveryRepository, dedupRepository, txDao)
         }
     }
+
+    /**
+     * Best-effort catalog refresh: pull the server account + category lists
+     * into the offline-tolerant cache. Called on every sync run (which only
+     * runs when a bridge endpoint is reachable) so the per-event selectors
+     * stay fresh. Never throws; a failure keeps the last known lists.
+     * Returns true only when both sides refreshed.
+     */
+    suspend fun refreshCatalogs(
+        db: AppDatabase,
+        configs: List<com.gomoney.capture.storage.ServerConfiguration>,
+    ): Boolean = runCatching {
+        CatalogRepository(db.serverAccountDao(), db.serverCategoryDao()).refreshAll(configs)
+    }.getOrDefault(false)
 
     private suspend fun syncPendingMemos(
         bridge: BridgeClient,

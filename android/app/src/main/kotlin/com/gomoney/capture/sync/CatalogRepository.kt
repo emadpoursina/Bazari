@@ -89,6 +89,19 @@ class CatalogRepository(
         return true
     }
 
+    /**
+     * Refresh both catalog caches (accounts + categories) from the server.
+     * Best-effort: returns true only when both succeed; a failed side keeps
+     * its last known list and flags unavailable (never silently cleared).
+     * Callers invoke this on every successful connection so the per-event
+     * selectors never offer a stale list.
+     */
+    suspend fun refreshAll(configs: List<ServerConfiguration>): Boolean {
+        val accountsOk = refreshAccounts(configs)
+        val categoriesOk = refreshCategories(configs)
+        return accountsOk && categoriesOk
+    }
+
     /** Instance convenience mirroring [Companion.isBindingStale]. */
     fun isBindingStale(boundAccountId: Int?, accounts: List<ServerAccount>): Boolean =
         Companion.isBindingStale(boundAccountId, accounts)
