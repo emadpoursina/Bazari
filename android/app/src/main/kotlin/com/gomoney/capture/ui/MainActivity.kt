@@ -161,6 +161,14 @@ private fun AppTabs(
                             onClearAll = {
                                 scope.launch { eventActions.clearAll() }
                             },
+                            // 007 FR-004/005: selective actions operate on the
+                            // selection only; unselected rows are untouched.
+                            onSyncSelected = { ids ->
+                                scope.launch { eventActions.syncSelected(ids) }
+                            },
+                            onDeleteSelected = { ids ->
+                                scope.launch { eventActions.deleteSelected(ids) }
+                            },
                             // 006 FR-001/006: scan entry wired to the coordinator's
                             // press-time permission check (PlatformCapturePermission).
                             scanState = scanState,
