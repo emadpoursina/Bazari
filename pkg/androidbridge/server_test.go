@@ -849,3 +849,107 @@ func TestUpdateAssignmentGoMoneyFailureIsRetryable(t *testing.T) {
 	require.Equal(t, http.StatusBadGateway, res.StatusCode)
 	require.Contains(t, readBody(t, res), "gomoney_unreachable")
 }
+
+// usdDestinationAccounts is the default fixture plus a USD asset account, for
+// cross-currency destination tests (production case: IRR txn, USD destination).
+func usdDestinationAccounts() []GoMoneyAccount {
+	return []GoMoneyAccount{
+		{ID: 1, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, Currency: "IRR"},
+		{ID: 2, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_EXPENSE, Currency: "IRR", IsDefault: true},
+		{ID: 3, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_INCOME, Currency: "IRR", IsDefault: true},
+		{ID: 4, Type: gomoneypbv1.AccountType_ACCOUNT_TYPE_ASSET, Currency: "USD"},
+	}
+}
+
+// A user-chosen destination account in another currency must receive the
+// converted amount in ITS currency (gomoney-integration.md: destination_amount
+// is expressed in the destination account currency). Before the fix this sent
+// destination_currency=IRR with a USD account and Go Money rejected every
+// delivery ("account with id 102 has currency USD, expected IRR").
+func TestCreateConvertsDestinationAmountForForeignAccount(t *testing.T) {
+	client := &fakeGoMoneyClient{accounts: usdDestinationAccounts()}
+	_, ts := newTestServer(t, client)
+
+	txn := validTxn(fingerprintHex(80))
+	destination := int32(4)
+	txn.DestinationAccountId = &destination
+
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Len(t, client.created, 1)
+
+	expense := client.created[0].GetExpense()
+	require.Equal(t, int32(4), expense.GetDestinationAccountId())
+	require.Equal(t, "USD", expense.GetDestinationCurrency())
+	require.Equal(t, "2.17", expense.GetDestinationAmount()) // 500000 IRR / 230000
+	// The bank side stays in the transaction currency.
+	require.Equal(t, "IRR", expense.GetSourceCurrency())
+	require.Equal(t, "-500000", expense.GetSourceAmount())
+}
+
+// Income shape: the destination leg is re-expressed in the chosen account's
+// currency as well.
+func TestCreateConvertsDestinationAmountForForeignIncomeDestination(t *testing.T) {
+	client := &fakeGoMoneyClient{accounts: usdDestinationAccounts()}
+	_, ts := newTestServer(t, client)
+
+	txn := validTxn(fingerprintHex(81))
+	txn.Type = TypeIncome
+	destination := int32(4)
+	txn.DestinationAccountId = &destination
+
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn))
+	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Len(t, client.created, 1)
+
+	income := client.created[0].GetIncome()
+	require.Equal(t, int32(4), income.GetDestinationAccountId())
+	require.Equal(t, "USD", income.GetDestinationCurrency())
+	require.Equal(t, "2.17", income.GetDestinationAmount())
+	// The default income counterpart stays on its own account/currency.
+	require.Equal(t, int32(3), income.GetSourceAccountId())
+	require.Equal(t, "IRR", income.GetSourceCurrency())
+}
+
+// Re-assigning the destination of an already-recorded transaction to an
+// account in another currency reconverts from the bank-side amount.
+func TestUpdateAssignmentConvertsDestinationForForeignAccount(t *testing.T) {
+	client := &fakeGoMoneyClient{accounts: usdDestinationAccounts()}
+	_, ts := newTestServer(t, client)
+	txn := validTxn(fingerprintHex(82))
+	require.Equal(t, http.StatusCreated, bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, txn)).StatusCode)
+
+	destination := int32(4)
+	update := &AssignmentUpdateRequest{
+		Fingerprint:          txn.Fingerprint,
+		GomoneyTxnId:         "1",
+		DestinationAccountId: &destination,
+	}
+	res := bridgeRequest(t, http.MethodPut, ts.URL+"/v1/transactions/assignment", "test-token", marshal(t, update))
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.Len(t, client.updated, 1)
+
+	updated := client.updated[0].GetTransaction().GetExpense()
+	require.Equal(t, int32(4), updated.GetDestinationAccountId())
+	require.Equal(t, "USD", updated.GetDestinationCurrency())
+	require.Equal(t, "2.17", updated.GetDestinationAmount())
+}
+
+// The 500 detail carries the sanitized Go Money error so the app can show why
+// a delivery failed, while bank text echoed inside it is redacted (FR-028).
+func TestCreateGoMoneyErrorSurfacesSanitizedDetail(t *testing.T) {
+	client := &fakeGoMoneyClient{
+		createErr: connect.NewError(connect.CodeUnknown, fmt.Errorf(
+			`failed to create transaction for request: title:"secret bank sms text" income:{source_account_id:69}: ` +
+				`failed to validate transactions: account with id 102 has currency USD, expected IRR`)),
+	}
+	_, ts := newTestServer(t, client)
+
+	res := bridgePost(t, ts.URL+"/v1/transactions", "test-token", marshal(t, validTxn(fingerprintHex(83))))
+	require.Equal(t, http.StatusInternalServerError, res.StatusCode)
+
+	body := readBody(t, res)
+	require.Contains(t, body, "gomoney_error")
+	require.Contains(t, body, "account with id 102 has currency USD, expected IRR")
+	require.NotContains(t, body, "secret bank sms text")
+}

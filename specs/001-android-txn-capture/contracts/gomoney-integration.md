@@ -49,6 +49,19 @@ or invalid rates return HTTP 400 before transaction creation. The converted
 target amount is stored on the transaction, so later rate changes do not change
 that original amount.
 
+When the app supplies a user-chosen `destinationAccountId` (destination account
+assignment), that account replaces the resolved destination account for either
+transaction shape. The destination amount is then re-expressed in the chosen
+account's currency using the same rate conversion — the captured amount is
+converted from the transaction currency into the destination account currency,
+and `destination_currency` is set to the destination account's currency. This
+keeps the request valid in Go Money when the user assigns a destination account
+in a different currency than the captured transaction (e.g. an IRR bank SMS
+assigned to a USD asset account); without it Go Money rejects the create with
+`account with id N has currency X, expected Y`. The same re-conversion applies
+to `PUT /v1/transactions/assignment` re-assignments, measured from the recorded
+transaction's bank-side leg.
+
 ### Account resolution (accountHint → Go Money account id)
 
 The bridge maintains a user-managed mapping file/table `mappings.json`:

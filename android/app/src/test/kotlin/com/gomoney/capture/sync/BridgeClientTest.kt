@@ -118,15 +118,45 @@ class BridgeClientTest {
         assertTrue(result.retryable)
     }
 
-    /** 500 gomoney_error → server_error, retry allowed. */
+    /** 500 gomoney_error → server_error, retry allowed, detail surfaced. */
     @Test
     fun `500 maps to server_error retryable`() = runTest {
-        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"error":"gomoney_error","details":"x"}"""))
+        server.enqueue(MockResponse().setResponseCode(500).setBody("""{"error":"gomoney_error","details":["x"]}"""))
 
         val result = BridgeClient().send(config, tx())
 
         assertEquals(BridgeClient.SendResult.Status.SERVER_ERROR, result.status)
         assertTrue(result.retryable)
+        assertEquals("gomoney_error x", result.errorDetail)
+    }
+
+    /** 500 with the bridge's sanitized Go Money error detail (real failures). */
+    @Test
+    fun `500 surfaces gomoney error detail`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(500).setBody(
+                """{"error":"gomoney_error","details":["account with id 102 has currency USD, expected IRR"]}""",
+            ),
+        )
+
+        val result = BridgeClient().send(config, tx())
+
+        assertEquals(BridgeClient.SendResult.Status.SERVER_ERROR, result.status)
+        assertEquals(
+            "gomoney_error account with id 102 has currency USD, expected IRR",
+            result.errorDetail,
+        )
+    }
+
+    /** 500 with a non-JSON body still yields a usable gomoney_error detail. */
+    @Test
+    fun `500 non-json body falls back to gomoney_error`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(500).setBody("oops"))
+
+        val result = BridgeClient().send(config, tx())
+
+        assertEquals(BridgeClient.SendResult.Status.SERVER_ERROR, result.status)
+        assertEquals("gomoney_error", result.errorDetail)
     }
 
     /** Ping endpoint happy path + Go Money unreachable. */

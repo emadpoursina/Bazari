@@ -76,8 +76,18 @@ object SyncBanner {
             append(". Auto-retry won't help — fix mapping/token, then Retry.")
         }
         Kind.OFFLINE_RETRYABLE -> buildString {
-            append("${banner.pendingTotal} waiting — bridge unreachable")
-            banner.lastCategory?.let { append(" ($it)") }
+            val gomoneyRejected = banner.lastCategory == ErrorCategory.SERVER_ERROR.name.lowercase()
+            append("${banner.pendingTotal} waiting — ")
+            // A server_error means the bridge answered but Go Money rejected
+            // the delivery; only network_error is an actual bridge outage.
+            if (gomoneyRejected) {
+                append("bridge reachable, but Go Money rejected the delivery")
+            } else {
+                append("bridge unreachable")
+            }
+            banner.lastCategory?.let { append(" ($it") }
+            banner.lastDetail?.let { append(": $it") }
+            if (banner.lastCategory != null) append(")")
             banner.lastAttemptAt?.let { append(" since ${shortTime(it)}") }
             append(". Will auto-send when you're home.")
         }

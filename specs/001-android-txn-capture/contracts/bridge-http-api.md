@@ -54,7 +54,7 @@ Deliver one normalized transaction. Idempotent by fingerprint.
 | 502 | `{ "error": "gomoney_unreachable", "details": "..." }` | `NETWORK_ERROR`; retry with backoff |
 | 500 | `{ "error": "gomoney_error", "details": "..." }` | `SERVER_ERROR`; retry allowed |
 
-Notes: the bridge returns 201 only **after** Go Money's `CreateTransaction` succeeds (synchronous single round-trip). No async queueing inside the bridge — offline tolerance is the app outbox's job.
+Notes: the bridge returns 201 only **after** Go Money's `CreateTransaction` succeeds (synchronous single round-trip). No async queueing inside the bridge — offline tolerance is the app outbox's job. On HTTP 500 the `details` array carries the bridge-sanitized Go Money error (user-authored `title`/`notes` fields redacted per FR-028, length-capped), so the app can show why a delivery was rejected; the same sanitized message is written to the bridge operation log.
 
 ### `PUT /v1/transactions/memo`
 

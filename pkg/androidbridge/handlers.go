@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -274,14 +275,31 @@ func (s *Server) handleUpdateAssignment(w http.ResponseWriter, r *http.Request) 
 			s.log.Request("PUT /v1/transactions/assignment", req.Fingerprint, fmt.Sprintf("http=%d", status), s.now().Sub(start))
 			return
 		}
-		if _, found := findGoMoneyAccount(accounts, *req.DestinationAccountId); !found {
+		destination, found := findGoMoneyAccount(accounts, *req.DestinationAccountId)
+		if !found {
 			writeJSON(w, http.StatusBadRequest, ErrorResponse{
 				Error:   WireValidationError,
 				Details: []string{"destination Go Money account was not found"},
 			})
 			return
 		}
-		applyDestinationAccount(baseRequest, *req.DestinationAccountId)
+		// Re-express the destination leg in the chosen account's currency so a
+		// cross-currency reassignment stays valid in Go Money.
+		amount, fromCurrency, amountErr := bankSideAmount(baseRequest)
+		if amountErr != nil {
+			writeJSON(w, http.StatusBadRequest, ErrorResponse{
+				Error:   WireValidationError,
+				Details: []string{amountErr.Error()},
+			})
+			return
+		}
+		destAmount, convErr := s.destinationAmount(r.Context(), amount, fromCurrency, destination)
+		if convErr != nil {
+			status, body := classifyConversionError(convErr)
+			writeJSON(w, status, body)
+			return
+		}
+		applyDestinationAccount(baseRequest, destination, destAmount)
 	}
 	if req.CategoryId != nil {
 		categories, categoryErr := s.client.ListCategories(r.Context())
@@ -377,14 +395,64 @@ func assignmentIdentityMatches(entry *DedupEntry, req *AssignmentUpdateRequest) 
 }
 
 // applyDestinationAccount sets the chosen Go Money destination account on the
-// create/update request for either transaction shape.
-func applyDestinationAccount(req *transactionsv1.CreateTransactionRequest, id int32) {
+// create/update request for either transaction shape. The destination amount
+// is rewritten in the destination account's currency
+// (contracts/gomoney-integration.md: destination_amount is expressed in the
+// destination account currency), so a user-chosen account in another currency
+// produces a valid request instead of a Go Money currency-mismatch rejection.
+func applyDestinationAccount(req *transactionsv1.CreateTransactionRequest, destination GoMoneyAccount, amount string) {
 	if expense := req.GetExpense(); expense != nil {
-		expense.DestinationAccountId = id
+		expense.DestinationAccountId = destination.ID
+		expense.DestinationAmount = amount
+		expense.DestinationCurrency = destination.Currency
 	}
 	if income := req.GetIncome(); income != nil {
-		income.DestinationAccountId = id
+		income.DestinationAccountId = destination.ID
+		income.DestinationAmount = amount
+		income.DestinationCurrency = destination.Currency
 	}
+}
+
+// destinationAmount converts the captured amount into the chosen destination
+// account's currency at Go Money's configured rate. Amounts already in the
+// destination currency pass through unchanged.
+func (s *Server) destinationAmount(
+	ctx context.Context,
+	amount int64,
+	fromCurrency string,
+	destination GoMoneyAccount,
+) (string, error) {
+	if destination.Currency == fromCurrency {
+		return formatIRR(amount), nil
+	}
+	currencies, err := s.client.ListCurrencies(ctx, []string{fromCurrency, destination.Currency})
+	if err != nil {
+		return "", err
+	}
+	return convertCurrencyAmount(amount, fromCurrency, destination.Currency, currencies)
+}
+
+// bankSideAmount extracts the original captured amount and currency from the
+// request's bank-side leg (source for expenses, destination for incomes) so a
+// destination re-assignment can reconvert from the transaction currency.
+func bankSideAmount(req *transactionsv1.CreateTransactionRequest) (int64, string, error) {
+	var raw, currency string
+	if expense := req.GetExpense(); expense != nil {
+		raw, currency = expense.GetSourceAmount(), expense.GetSourceCurrency()
+	}
+	if income := req.GetIncome(); income != nil {
+		raw, currency = income.GetDestinationAmount(), income.GetDestinationCurrency()
+	}
+	if raw == "" || currency == "" {
+		return 0, "", errors.New("transaction is missing its bank-side amount")
+	}
+	amount, err := decimal.NewFromString(raw)
+	if err != nil {
+		return 0, "", errors.New("transaction bank-side amount is invalid")
+	}
+	// Bank-side amounts are integers by construction (formatIRR); truncate any
+	// decimal scale Go Money added when storing them.
+	return amount.Abs().Truncate(0).BigInt().Int64(), currency, nil
 }
 
 func categoryExists(categories []GoMoneyCategory, id int32) bool {
@@ -646,15 +714,22 @@ func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, 
 	}
 
 	// Optional destination account / category chosen by the user (FR-017/018).
-	// Both must resolve in the server-provided catalogs, else 400.
+	// Both must resolve in the server-provided catalogs, else 400. The
+	// destination amount is re-expressed in the chosen account's currency.
 	if txn.DestinationAccountId != nil {
-		if _, found := findGoMoneyAccount(accounts, *txn.DestinationAccountId); !found {
+		destination, found := findGoMoneyAccount(accounts, *txn.DestinationAccountId)
+		if !found {
 			return http.StatusBadRequest, ErrorResponse{
 				Error:   WireValidationError,
 				Details: []string{"destination Go Money account was not found"},
 			}
 		}
-		applyDestinationAccount(req, *txn.DestinationAccountId)
+		destAmount, convErr := s.destinationAmount(ctx, txn.Amount, txn.Currency, destination)
+		if convErr != nil {
+			status, body := classifyConversionError(convErr)
+			return status, body
+		}
+		applyDestinationAccount(req, destination, destAmount)
 	}
 	if txn.CategoryId != nil {
 		categories, categoryErr := s.client.ListCategories(ctx)
@@ -698,7 +773,7 @@ func (s *Server) deliver(ctx context.Context, txn *NormalizedTransaction) (int, 
 
 	if err != nil {
 		_ = s.dedup.Delete(ctx, txn.Fingerprint)
-		s.log.Operation("gomoney.create", txn.Fingerprint, "error", createLatency)
+		s.log.Operation("gomoney.create", txn.Fingerprint, "error: "+sanitizeGoMoneyError(err), createLatency)
 		return classifyGoMoneyError(err)
 	}
 
@@ -872,7 +947,30 @@ func convertCurrencyAmount(amount int64, fromCurrency, toCurrency string, curren
 	return rounded.StringFixed(to.DecimalPlaces), nil
 }
 
+// maxErrorDetailLength caps sanitized Go Money error details (logging + wire).
+const maxErrorDetailLength = 300
+
+var sensitiveProtoField = regexp.MustCompile(`(title|notes):"[^"]*"`)
+
+// sanitizeGoMoneyError makes a Go Money error safe to log and return in error
+// details: Go Money echoes the full request proto (including title/notes that
+// carry captured bank message text — FR-028 forbids echoing or logging it),
+// so those fields are redacted, whitespace is collapsed and the length capped.
+func sanitizeGoMoneyError(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := sensitiveProtoField.ReplaceAllString(err.Error(), `$1:"<redacted>"`)
+	msg = strings.Join(strings.Fields(msg), " ")
+	if len(msg) > maxErrorDetailLength {
+		msg = msg[:maxErrorDetailLength] + "..."
+	}
+	return msg
+}
+
 // classifyGoMoneyError maps a Go Money failure to the contract's 502/500 pair.
+// The 500 detail carries the sanitized Go Money error so the app can show why
+// a delivery failed instead of a bare "gomoney_error".
 func classifyGoMoneyError(err error) (int, any) {
 	var connectErr *connect.Error
 	if errors.As(err, &connectErr) {
@@ -886,7 +984,20 @@ func classifyGoMoneyError(err error) (int, any) {
 	}
 	return http.StatusInternalServerError, ErrorResponse{
 		Error:   WireGoMoneyError,
-		Details: []string{WireGoMoneyError},
+		Details: []string{sanitizeGoMoneyError(err)},
+	}
+}
+
+// classifyConversionError separates Go Money lookup failures (classified to
+// 502/500) from exchange-rate/validation problems (400 validation).
+func classifyConversionError(err error) (int, any) {
+	var connectErr *connect.Error
+	if errors.As(err, &connectErr) {
+		return classifyGoMoneyError(err)
+	}
+	return http.StatusBadRequest, ErrorResponse{
+		Error:   WireValidationError,
+		Details: []string{err.Error()},
 	}
 }
 

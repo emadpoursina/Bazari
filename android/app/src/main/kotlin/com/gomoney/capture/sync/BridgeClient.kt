@@ -240,7 +240,7 @@ class BridgeClient(
                     // Whole-batch failure (401/502/500) → callers fall back to
                     // single sends with backoff.
                     val category = categoryForCode(res.code)
-                    return transactions.map { SendResult.failure(category, null) }
+                    return transactions.map { SendResult.failure(category, readGoMoneyError(res)) }
                 }
                 parseBulkResponse(res)
             }
@@ -352,7 +352,9 @@ class BridgeClient(
                 res.code == 400 -> SendResult.failure(ErrorCategory.VALIDATION_ERROR, readError(res))
                 res.code == 401 -> SendResult.failure(ErrorCategory.SERVER_ERROR, "unauthorized")
                 res.code == 502 -> SendResult.failure(ErrorCategory.NETWORK_ERROR, "gomoney_unreachable")
-                else -> SendResult.failure(ErrorCategory.SERVER_ERROR, "gomoney_error")
+                // Surface the bridge's sanitized Go Money error so the UI can
+                // show WHY the delivery failed instead of a bare gomoney_error.
+                else -> SendResult.failure(ErrorCategory.SERVER_ERROR, readGoMoneyError(res))
             }
         }
     }.getOrElse {
@@ -420,6 +422,15 @@ class BridgeClient(
                 ?: ""
             "$error $details".trim()
         }.getOrDefault("validation")
+    }
+
+    /**
+     * 5xx detail: the bridge's sanitized Go Money error (error + details),
+     * falling back to a bare gomoney_error for non-JSON bodies.
+     */
+    private fun readGoMoneyError(res: Response): String {
+        val parsed = readError(res)
+        return if (parsed == "validation") "gomoney_error" else parsed
     }
 
     private fun parseBulkResponse(res: Response): List<SendResult> {

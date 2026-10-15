@@ -2,6 +2,8 @@ package com.gomoney.capture.sync
 
 import com.gomoney.capture.storage.DeliveryRecord
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SyncBannerTest {
@@ -26,6 +28,23 @@ class SyncBannerTest {
         assertEquals(SyncBanner.Kind.OFFLINE_RETRYABLE, banner.kind)
         assertEquals(1, banner.pendingTotal)
         assertEquals("network_error", banner.lastCategory)
+        val message = SyncBanner.message(banner)
+        assertTrue(message.contains("bridge unreachable"))
+        assertTrue(message.contains("network unreachable"))
+    }
+
+    /** server_error means the bridge answered but Go Money rejected — the
+     *  banner must say that instead of "bridge unreachable" and show why. */
+    @Test
+    fun `server error banner names gomoney and shows the reason`() {
+        val banner = SyncBanner.forPending(
+            listOf(record("1", category = "server_error", detail = "gomoney_error account with id 102 has currency USD")),
+        )
+        assertEquals(SyncBanner.Kind.OFFLINE_RETRYABLE, banner.kind)
+        val message = SyncBanner.message(banner)
+        assertTrue(message.contains("Go Money rejected"))
+        assertFalse(message.contains("bridge unreachable"))
+        assertTrue(message.contains("account with id 102"))
     }
 
     @Test
