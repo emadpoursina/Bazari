@@ -19,6 +19,40 @@ import com.gomoney.capture.storage.txType
 import java.util.UUID
 
 /**
+ * 008 FR-007 / contracts/defaults-stamping.md §2 — the pure capture-time
+ * stamping rule (research R4/R9):
+ *
+ *  - fill-if-null on `categoryId` / `destinationAccountId` only (an existing
+ *    assignment always wins — spec Assumption);
+ *  - a stored default ID is honored only while it resolves in the cached
+ *    catalog (`serverCategoryDao().byId` / `serverAccountDao().byId`, passed
+ *    in as [categoryExists] / [accountExists]); a stale ID leaves the field
+ *    null and the stored default untouched (FR-010);
+ *  - `assignmentSyncState = 'pending'` ONLY when a field was stamped, so the
+ *    row rides the exact existing assignment-sync path (R5, zero `sync/`
+ *    changes);
+ *  - never touches currency, fingerprint, memoSyncState, userMemo or
+ *    delivery state; currency is never compared (FR-007b).
+ */
+internal suspend fun NormalizedTransaction.stampWithDefaults(
+    defaultCategoryId: Int?,
+    defaultAccountId: Int?,
+    categoryExists: suspend (Int) -> Boolean,
+    accountExists: suspend (Int) -> Boolean,
+): NormalizedTransaction {
+    val stampedCategory = categoryId == null &&
+        defaultCategoryId != null && categoryExists(defaultCategoryId)
+    val stampedAccount = destinationAccountId == null &&
+        defaultAccountId != null && accountExists(defaultAccountId)
+    if (!stampedCategory && !stampedAccount) return this
+    return copy(
+        categoryId = if (stampedCategory) defaultCategoryId else categoryId,
+        destinationAccountId = if (stampedAccount) defaultAccountId else destinationAccountId,
+        assignmentSyncState = "pending",
+    )
+}
+
+/**
  * Capture pipeline (005 contracts/source-admission.md, T020/T027):
  * RawEvent → enabled TransactionSource(identifier, channel) → UserSourceParser
  * → fingerprint → persist NormalizedTransaction + DeliveryRecord.
@@ -111,7 +145,20 @@ class CapturePipeline(
         )
         val known = dedupRepository.lookup(fingerprint)
         val finalTx = parsed.copy(id = UUID.randomUUID().toString(), fingerprint = fingerprint)
-        return persist(finalTx, event, known)
+        // 008 FR-007: stamp the user's defaults AFTER a successful parse and
+        // BEFORE the insert (R4) — fill-if-null + catalog validation only;
+        // the stored defaults themselves are never modified (FR-010), and
+        // existing rows are never rewritten (FR-008). Held rows get stamped
+        // too; they keep their no-expedited semantics (R5) because `persist`
+        // only calls onCaptured for queued rows.
+        val defaults = settings.currentDefaults()
+        val stampedTx = finalTx.stampWithDefaults(
+            defaultCategoryId = defaults.defaultCategoryId,
+            defaultAccountId = defaults.defaultAccountId,
+            categoryExists = { id -> db.serverCategoryDao().byId(id) != null },
+            accountExists = { id -> db.serverAccountDao().byId(id) != null },
+        )
+        return persist(stampedTx, event, known)
     }
 
     private suspend fun persist(

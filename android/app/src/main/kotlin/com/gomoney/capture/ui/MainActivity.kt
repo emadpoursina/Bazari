@@ -152,9 +152,8 @@ private fun AppTabs(
                             onRetry = { deliveryId ->
                                 scope.launch { eventActions.retry(deliveryId) }
                             },
-                            onSaveMemo = { transactionId, memo ->
-                                scope.launch { eventActions.saveMemo(transactionId, memo) }
-                            },
+                            // 008 US1: the note editor moved to EventDetailScreen —
+                            // no onSaveMemo parameter on list rows anymore.
                             onClearProcessed = {
                                 scope.launch { eventActions.clearProcessed() }
                             },
@@ -196,6 +195,11 @@ private fun AppTabs(
                             },
                             onSaveCurrency = { transactionId, currency ->
                                 scope.launch { eventActions.saveCurrency(transactionId, currency) }
+                            },
+                            // 008 US1: existing save logic only (EventActions.saveMemo
+                            // owns trim/limit/pending semantics — R1).
+                            onSaveMemo = { transactionId, memo ->
+                                scope.launch { eventActions.saveMemo(transactionId, memo) }
                             },
                             onBack = { selectedTxId = null },
                             catalogUnavailable = catalogState.categories ==
@@ -261,6 +265,11 @@ private fun AppTabs(
                     permission = permission,
                     onTestConnection = { settingsViewModel.testConnection() },
                     connectionStatus = settingsConnectionStatus,
+                    // 008 US2/US3: cached catalogs + availability for the
+                    // "Default category & default account" card (R6).
+                    catalogCategories = catalogCategories,
+                    catalogAccounts = catalogAccounts,
+                    catalogState = catalogState,
                 )
             }
         }

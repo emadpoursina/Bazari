@@ -3,13 +3,16 @@ package com.gomoney.capture.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -59,6 +62,9 @@ fun EventDetailScreen(
     categories: List<ServerCategory> = emptyList(),
     onSaveAssignment: (String, Int?, Int?) -> Unit = { _, _, _ -> },
     onSaveCurrency: (String, String) -> Unit = { _, _ -> },
+    // 008 US1 (contracts/note-editing-ui.md §2): the single note-editing
+    // surface — wired in MainActivity to the existing EventActions.saveMemo.
+    onSaveMemo: (txId: String, memo: String) -> Unit = { _, _ -> },
     onBack: () -> Unit = {},
     catalogUnavailable: Boolean = false,
     onRefreshCatalogs: () -> Unit = {},
@@ -68,6 +74,10 @@ fun EventDetailScreen(
     var accountMenuOpen by remember { mutableStateOf(false) }
     var categoryMenuOpen by remember { mutableStateOf(false) }
     var currencyMenuOpen by remember { mutableStateOf(false) }
+    // 008 US1: note draft keyed on tx.id (re-prefills whenever the tx changes,
+    // e.g. after save) — prefill matches the pre-move row behavior (FR-004).
+    var editingMemo by remember(tx?.id) { mutableStateOf(false) }
+    var memoDraft by remember(tx?.id, tx?.userMemo) { mutableStateOf(tx?.userMemo.orEmpty()) }
 
     Column(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -178,6 +188,59 @@ fun EventDetailScreen(
                     "The saved category is no longer on the server — pick a new one.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+            }
+        }
+
+        // 008 US1 — note editing (contracts/note-editing-ui.md §2): below the
+        // category/destination controls, above the failed-delivery retry block.
+        // Rendered only when a transaction exists (tx?.let guard).
+        tx?.let { transaction ->
+            Text("Note", style = MaterialTheme.typography.labelLarge)
+            if (editingMemo) {
+                OutlinedTextField(
+                    value = memoDraft,
+                    onValueChange = { if (it.length <= EventActions.MAX_MEMO_LENGTH) memoDraft = it },
+                    label = { Text("What was this for?") },
+                    placeholder = { Text("e.g. groceries, lunch, taxi") },
+                    modifier = Modifier.fillMaxWidth(),
+                    supportingText = {
+                        Text(
+                            "Saved on this phone and synced to Go Money · " +
+                                "${memoDraft.length}/${EventActions.MAX_MEMO_LENGTH}",
+                        )
+                    },
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = {
+                        // Trim/blank→null/pending-sync handled by EventActions.saveMemo.
+                        onSaveMemo(transaction.id, memoDraft)
+                        editingMemo = false
+                    }) {
+                        Text("Save note")
+                    }
+                    OutlinedButton(onClick = {
+                        // Cancel discards the draft and reverts to display mode.
+                        memoDraft = transaction.userMemo.orEmpty()
+                        editingMemo = false
+                    }) {
+                        Text("Cancel")
+                    }
+                }
+            } else {
+                if (!transaction.userMemo.isNullOrBlank()) {
+                    Text("Note: ${transaction.userMemo}", style = MaterialTheme.typography.bodyMedium)
+                }
+                if (transaction.memoSyncState == "pending") {
+                    val pendingLabel = if (transaction.userMemo.isNullOrBlank()) {
+                        "Note removal saved on this phone · waiting to sync"
+                    } else {
+                        "Saved on this phone · waiting to sync"
+                    }
+                    Text(pendingLabel, style = MaterialTheme.typography.labelSmall)
+                }
+                OutlinedButton(onClick = { editingMemo = true }) {
+                    Text(if (transaction.userMemo.isNullOrBlank()) "Add note" else "Edit note")
+                }
             }
         }
 

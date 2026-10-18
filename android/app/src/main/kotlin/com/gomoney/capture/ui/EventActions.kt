@@ -132,7 +132,9 @@ class EventActions(
         return requeued
     }
 
-    private companion object {
+    // 008 R2: single source of truth for the note limit, shared with the
+    // EventDetailScreen note editor (T002).
+    internal companion object {
         const val MAX_MEMO_LENGTH = 200
     }
 }
