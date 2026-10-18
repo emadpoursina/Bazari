@@ -1,6 +1,7 @@
 package com.gomoney.capture.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -10,6 +11,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -25,7 +28,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.gomoney.capture.capture.PlatformCapturePermission
 import com.gomoney.capture.storage.BridgeEndpoint
+import com.gomoney.capture.storage.DefaultPreferences
 import com.gomoney.capture.storage.ServerConfiguration
+import com.gomoney.capture.storage.ServerAccount
+import com.gomoney.capture.storage.ServerCategory
 import com.gomoney.capture.storage.SettingsRepository
 import androidx.compose.runtime.collectAsState
 import androidx.lifecycle.ViewModel
@@ -75,6 +81,27 @@ class SettingsViewModel(
     /** Per-endpoint last test result, keyed by endpoint id. */
     private val _endpointStatus = MutableStateFlow<Map<String, String>>(emptyMap())
     val endpointStatus: StateFlow<Map<String, String>> = _endpointStatus
+
+    // 008 US2 (T012): default category/account state + actions
+    // (contracts/defaults-stamping.md §1/§3 — local-first, no save button).
+    val defaults: StateFlow<DefaultPreferences> =
+        settings.observeDefaults().stateIn(
+            viewModelScope,
+            SharingStarted.WhileSubscribed(5_000),
+            DefaultPreferences(defaultCategoryId = null, defaultAccountId = null),
+        )
+
+    fun setDefaultCategoryId(id: Int) =
+        viewModelScope.launch { settings.setDefaultCategoryId(id) }
+
+    fun clearDefaultCategory() =
+        viewModelScope.launch { settings.clearDefaultCategory() }
+
+    fun setDefaultAccountId(id: Int) =
+        viewModelScope.launch { settings.setDefaultAccountId(id) }
+
+    fun clearDefaultAccount() =
+        viewModelScope.launch { settings.clearDefaultAccount() }
 
     fun save(url: String, token: String) {
         viewModelScope.launch {
@@ -184,10 +211,17 @@ fun SettingsScreen(
     permission: PlatformCapturePermission,
     onTestConnection: () -> Unit,
     connectionStatus: String,
+    // 008 US2/US3 (T013/T014): cached server catalogs + availability gate
+    // for the "Default category & default account" card (R6, FR-010/FR-011).
+    catalogCategories: List<ServerCategory> = emptyList(),
+    catalogAccounts: List<ServerAccount> = emptyList(),
+    catalogState: com.gomoney.capture.sync.CatalogRepository.CatalogState =
+        com.gomoney.capture.sync.CatalogRepository.CatalogState(),
 ) {
     val config by viewModel.config.collectAsState()
     val endpoints by viewModel.endpoints.collectAsState()
     val perEndpointStatus by viewModel.endpointStatus.collectAsState()
+    val defaults by viewModel.defaults.collectAsState()
     var showAdd by remember { mutableStateOf(false) }
     var editingId by remember { mutableStateOf<String?>(null) }
 
@@ -267,6 +301,22 @@ fun SettingsScreen(
         ToggleRow("SMS capture", config.smsCaptureEnabled) { viewModel.setSmsCapture(it) }
         ToggleRow("Debug mode", config.debugModeEnabled) { viewModel.setDebugMode(it) }
 
+        // 008 US2/US3 (contracts/defaults-stamping.md §3): defaults card sits
+        // between the capture toggles and the permission status (R6).
+        DefaultsCard(
+            defaults = defaults,
+            categories = catalogCategories,
+            accounts = catalogAccounts,
+            categoriesUnavailable = catalogState.categories ==
+                com.gomoney.capture.sync.CatalogRepository.Status.UNAVAILABLE,
+            accountsUnavailable = catalogState.accounts ==
+                com.gomoney.capture.sync.CatalogRepository.Status.UNAVAILABLE,
+            onSelectCategory = { viewModel.setDefaultCategoryId(it) },
+            onClearCategory = { viewModel.clearDefaultCategory() },
+            onSelectAccount = { viewModel.setDefaultAccountId(it) },
+            onClearAccount = { viewModel.clearDefaultAccount() },
+        )
+
         // 005 FR-012: no bank/package/sender allow-list here. Capture
         // identifiers are Sources only — see the Sources tab.
 
@@ -282,6 +332,126 @@ fun SettingsScreen(
             text = if (permission.isSmsPermissionGranted()) "SMS permission: granted" else "SMS permission: not granted (optional)",
             style = MaterialTheme.typography.bodySmall,
         )
+    }
+}
+
+/**
+ * 008 US2/US3 — "Default category & default account" card (T013/T017;
+ * contracts/defaults-stamping.md §3): current label or "None" (FR-011),
+ * independent Clear per default (FR-009), "no longer available" warning for
+ * a stale stored ID (FR-010), pickers disabled with a hint while the catalog
+ * is empty/unavailable — stored defaults keep applying at capture.
+ */
+@Composable
+private fun DefaultsCard(
+    defaults: DefaultPreferences,
+    categories: List<ServerCategory>,
+    accounts: List<ServerAccount>,
+    categoriesUnavailable: Boolean,
+    accountsUnavailable: Boolean,
+    onSelectCategory: (Int) -> Unit,
+    onClearCategory: () -> Unit,
+    onSelectAccount: (Int) -> Unit,
+    onClearAccount: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            Text(
+                text = "Default category & default account",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                text = "Applied to newly captured transactions only — existing events are never changed.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            DefaultPickerRow(
+                label = "Default category",
+                selectedId = defaults.defaultCategoryId,
+                selectedLabel = defaults.defaultCategoryId?.let { id ->
+                    categories.firstOrNull { it.id == id }?.label
+                },
+                options = categories.map { it.id to it.label },
+                unavailable = categoriesUnavailable,
+                onSelect = onSelectCategory,
+                onClear = onClearCategory,
+            )
+            DefaultPickerRow(
+                label = "Default destination account",
+                selectedId = defaults.defaultAccountId,
+                selectedLabel = defaults.defaultAccountId?.let { id ->
+                    accounts.firstOrNull { it.id == id }?.label
+                },
+                options = accounts.map { it.id to it.label },
+                unavailable = accountsUnavailable,
+                onSelect = onSelectAccount,
+                onClear = onClearAccount,
+            )
+        }
+    }
+}
+
+/** One default picker: label, dropdown (disabled when unavailable), Clear. */
+@Composable
+private fun DefaultPickerRow(
+    label: String,
+    selectedId: Int?,
+    selectedLabel: String?,
+    options: List<Pair<Int, String>>,
+    unavailable: Boolean,
+    onSelect: (Int) -> Unit,
+    onClear: () -> Unit,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val stale = selectedId != null && options.none { (id, _) -> id == selectedId }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+        ) {
+            // FR-011: current label, or "None" when unset.
+            Box(modifier = Modifier.weight(1f)) {
+                OutlinedButton(
+                    onClick = { menuOpen = true },
+                    // Catalog empty/unavailable → picking disabled (hint below);
+                    // the stored value stays visible and keeps applying.
+                    enabled = !unavailable && options.isNotEmpty(),
+                ) {
+                    Text(selectedLabel ?: "None")
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    options.forEach { (id, optionLabel) ->
+                        DropdownMenuItem(
+                            text = { Text(optionLabel) },
+                            onClick = {
+                                onSelect(id)
+                                menuOpen = false
+                            },
+                        )
+                    }
+                }
+            }
+            // FR-009: independent per-default clear, immediate (local-first).
+            TextButton(onClick = onClear, enabled = selectedId != null) {
+                Text("Clear")
+            }
+        }
+        if (stale) {
+            // FR-010/SC-006: stored ID no longer in the catalog.
+            Text(
+                text = "$label is no longer available — pick a new one or Clear.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        if (unavailable || options.isEmpty()) {
+            Text(
+                text = "Server list unavailable — pickers disabled. Saved defaults still apply to new captures.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
     }
 }
 

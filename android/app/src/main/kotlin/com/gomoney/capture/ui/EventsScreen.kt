@@ -15,12 +15,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -126,7 +124,8 @@ fun EventsScreen(
     onRetry: (String) -> Unit = {},
     onClearProcessed: () -> Unit = {},
     onClearAll: () -> Unit = {},
-    onSaveMemo: (String, String) -> Unit = { _, _ -> },
+    // 008 US1/FR-001: rows are display-only — the note editor moved to
+    // EventDetailScreen (contracts/note-editing-ui.md §1); onSaveMemo is gone.
     // 006 FR-001/005: scan control + inline banner (contracts/scan-coordination.md §4).
     scanState: ScanUiState = ScanUiState.Idle,
     onScan: () -> Unit = {},
@@ -264,7 +263,6 @@ fun EventsScreen(
                 EventCard(
                     row = row,
                     onRetry = onRetry,
-                    onSaveMemo = onSaveMemo,
                     categories = categories,
                     onOpenDetail = onOpenDetail,
                     selected = row.txId in selectedIds,
@@ -371,16 +369,12 @@ private fun openNotificationAccessSettings(context: Context) {
 private fun EventCard(
     row: EventRow,
     onRetry: (String) -> Unit,
-    onSaveMemo: (String, String) -> Unit,
     categories: List<com.gomoney.capture.storage.ServerCategory> = emptyList(),
     onOpenDetail: (String) -> Unit = {},
     // 007 FR-001: per-event selection checkbox.
     selected: Boolean = false,
     onToggleSelected: (Boolean) -> Unit = {},
 ) {
-    var editingMemo by remember(row.txId) { mutableStateOf(false) }
-    var memoDraft by remember(row.txId, row.userMemo) { mutableStateOf(row.userMemo.orEmpty()) }
-
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(12.dp)) {
             Row(
@@ -427,6 +421,9 @@ private fun EventCard(
                 }
             }
 
+            // 008 US1 (FR-001/003): display-only row — note text + pending
+            // labels retained exactly; the edit affordance lives on the detail
+            // screen (contracts/note-editing-ui.md §1).
             if (row.amountMinor > 0L) {
                 if (!row.userMemo.isNullOrBlank()) {
                     Text("Note: ${row.userMemo}", style = MaterialTheme.typography.bodyMedium)
@@ -438,31 +435,6 @@ private fun EventCard(
                         "Saved on this phone · waiting to sync"
                     }
                     Text(pendingLabel, style = MaterialTheme.typography.labelSmall)
-                }
-                if (editingMemo) {
-                    OutlinedTextField(
-                        value = memoDraft,
-                        onValueChange = { if (it.length <= MAX_MEMO_LENGTH) memoDraft = it },
-                        label = { Text("What was this for?") },
-                        placeholder = { Text("e.g. groceries, lunch, taxi") },
-                        modifier = Modifier.fillMaxWidth(),
-                        supportingText = { Text("Saved on this phone and synced to Go Money · ${memoDraft.length}/$MAX_MEMO_LENGTH") },
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = {
-                            onSaveMemo(row.txId, memoDraft)
-                            editingMemo = false
-                        }) {
-                            Text("Save note")
-                        }
-                        OutlinedButton(onClick = { editingMemo = false }) {
-                            Text("Cancel")
-                        }
-                    }
-                } else {
-                    OutlinedButton(onClick = { editingMemo = true }) {
-                        Text(if (row.userMemo.isNullOrBlank()) "Add note" else "Edit note")
-                    }
                 }
             }
 
@@ -479,8 +451,6 @@ private fun EventCard(
         }
     }
 }
-
-private const val MAX_MEMO_LENGTH = 200
 
 private fun formatTime(txAt: String): String = runCatching {
     OffsetDateTime.parse(txAt).format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))

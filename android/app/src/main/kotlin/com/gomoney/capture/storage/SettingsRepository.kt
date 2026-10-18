@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStoreFile
@@ -58,6 +59,17 @@ data class BridgeEndpoint(
 )
 
 /**
+ * 008 FR-005/FR-006 (data-model §1, contracts/defaults-stamping.md §1):
+ * the user's default category / default destination account for NEW
+ * captures. Per-device, local-only, never synced (spec Assumption);
+ * a null field means "no default" (key absent).
+ */
+data class DefaultPreferences(
+    val defaultCategoryId: Int?,
+    val defaultAccountId: Int?,
+)
+
+/**
  * Settings repository: toggles/URL/allow-list in Preferences DataStore, the
  * bearer token in EncryptedSharedPreferences (FR-006: no bank credentials
  * stored anywhere; only the user's own bridge token, encrypted at rest).
@@ -88,6 +100,9 @@ class SettingsRepository(
     private val legacyPackagesKey = stringSetPreferencesKey("enabled_bank_packages")
     private val debugKey = booleanPreferencesKey("debug_mode_enabled")
     private val endpointsKey = stringPreferencesKey("bridge_endpoints_json")
+    // 008 FR-005/006: default category/account for new captures (R3).
+    private val defaultCategoryIdKey = intPreferencesKey("default_category_id")
+    private val defaultAccountIdKey = intPreferencesKey("default_account_id")
 
     private val tokenKey = "bridge_bearer_token"
 
@@ -274,6 +289,28 @@ class SettingsRepository(
     suspend fun setSmsCaptureEnabled(enabled: Boolean) = edit { it[smsKey] = enabled }
 
     suspend fun setDebugModeEnabled(enabled: Boolean) = edit { it[debugKey] = enabled }
+
+    // --- 008: default category / default account (FR-005–FR-006, FR-009) ---
+
+    /** Emits both defaults; key absent → null field (data-model §1). */
+    fun observeDefaults(): Flow<DefaultPreferences> = dataStore.data.map { stored ->
+        DefaultPreferences(
+            defaultCategoryId = stored[defaultCategoryIdKey],
+            defaultAccountId = stored[defaultAccountIdKey],
+        )
+    }
+
+    /** One-shot read for the capture path (R4: stamp-at-capture). */
+    suspend fun currentDefaults(): DefaultPreferences = observeDefaults().first()
+
+    suspend fun setDefaultCategoryId(id: Int) = edit { it[defaultCategoryIdKey] = id }
+
+    suspend fun setDefaultAccountId(id: Int) = edit { it[defaultAccountIdKey] = id }
+
+    /** FR-009: per-key remove() — clearing one default leaves the other intact. */
+    suspend fun clearDefaultCategory() = edit { it.remove(defaultCategoryIdKey) }
+
+    suspend fun clearDefaultAccount() = edit { it.remove(defaultAccountIdKey) }
 
     // --- internals ---
 
