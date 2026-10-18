@@ -1,6 +1,7 @@
 AWS_DEFAULT_REGION ?= eu-north-1
 AWS_EXCHANGE_RATES_BUCKET ?= go-money-exchange-rates
 DOCKER_SERVER_IMAGE_NAME ?= "go-money-server:latest"
+DOCKER_NAVASAN_IMAGE_NAME ?= "go-money-navasan-translator:latest"
 BRIDGE_ENV_FILE ?= ./.env.android-bridge
 
 VERSION ?= $(shell git describe --tags --always --dirty)
@@ -53,6 +54,14 @@ android-gradle-test:
 .PHONY: build-docker
 build-docker:
 	docker build -f ./build/Dockerfile.server --build-arg="SOURCE_PATH=cmd/server" --build-arg="VERSION=${VERSION}" --build-arg="COMMIT_SHA=${COMMIT_SHA}" -t ${DOCKER_SERVER_IMAGE_NAME} .
+
+.PHONY: build-docker-navasan
+build-docker-navasan:
+	docker build -f ./build/Dockerfile.server --build-arg="SOURCE_PATH=cmd/navasan-translator" -t ${DOCKER_NAVASAN_IMAGE_NAME} .
+
+.PHONY: navasan-translator
+navasan-translator:
+	go run ./cmd/navasan-translator
 
 .PHONY: sam-deploy
 sam-deploy:
