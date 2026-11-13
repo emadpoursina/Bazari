@@ -24,10 +24,22 @@ object MemoPromptNotifier {
     const val MAX_MEMO_LENGTH = 200
 
     fun show(context: Context, tx: NormalizedTransaction) {
+        // FR-017 / T010: Skip posting if a note already exists.
+        if (!tx.userMemo.isNullOrBlank()) return
         if (!canPost(context)) return
         ensureChannel(context)
 
         val requestCode = tx.id.hashCode() and 0x7fffffff
+
+        // FR-005 / T014: Deep-link to EventDetailScreen when tapping notification body.
+        val detailIntent = NotificationOpen.createDetailIntent(context, tx.id)
+        val contentIntent = PendingIntent.getActivity(
+            context,
+            requestCode,
+            detailIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+
         val intent = Intent(context, MemoReplyReceiver::class.java)
             .setData(Uri.parse("gomoney-capture://memo/${tx.id}"))
             .putExtra(EXTRA_TRANSACTION_ID, tx.id)
@@ -54,6 +66,7 @@ object MemoPromptNotifier {
                 Notification.BigTextStyle()
                     .bigText("Add a short note while it is fresh. The note is saved on this phone and synced to Go Money."),
             )
+            .setContentIntent(contentIntent)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setCategory(Notification.CATEGORY_REMINDER)
             .setAutoCancel(true)

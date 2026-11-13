@@ -36,8 +36,12 @@ class EventActions(
     suspend fun saveMemo(transactionId: String, memo: String): Boolean {
         val normalizedMemo = memo.trim().take(MAX_MEMO_LENGTH).ifBlank { null }
         val current = db.normalizedTransactionDao().byId(transactionId) ?: return false
-        if (current.userMemo == normalizedMemo && current.memoSyncState == "synced") return true
+        if (current.userMemo == normalizedMemo && current.memoSyncState == "synced") {
+            com.gomoney.capture.sync.MemoPromptNotifier.cancel(context, transactionId)
+            return true
+        }
         if (db.normalizedTransactionDao().updateMemo(transactionId, normalizedMemo) == 0) return false
+        com.gomoney.capture.sync.MemoPromptNotifier.cancel(context, transactionId)
         SyncEngine.enqueueExpedited(context)
         return true
     }

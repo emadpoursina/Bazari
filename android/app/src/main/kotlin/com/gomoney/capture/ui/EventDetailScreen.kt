@@ -74,9 +74,8 @@ fun EventDetailScreen(
     var accountMenuOpen by remember { mutableStateOf(false) }
     var categoryMenuOpen by remember { mutableStateOf(false) }
     var currencyMenuOpen by remember { mutableStateOf(false) }
-    // 008 US1: note draft keyed on tx.id (re-prefills whenever the tx changes,
-    // e.g. after save) — prefill matches the pre-move row behavior (FR-004).
-    var editingMemo by remember(tx?.id) { mutableStateOf(false) }
+    // 009 US3 (contracts/note-field-ui.md): always-visible note field.
+    // Note draft keyed on tx.id and userMemo (prefills when tx changes).
     var memoDraft by remember(tx?.id, tx?.userMemo) { mutableStateOf(tx?.userMemo.orEmpty()) }
 
     Column(
@@ -191,56 +190,45 @@ fun EventDetailScreen(
             }
         }
 
-        // 008 US1 — note editing (contracts/note-editing-ui.md §2): below the
-        // category/destination controls, above the failed-delivery retry block.
-        // Rendered only when a transaction exists (tx?.let guard).
+        // 009 US3 — note editing (contracts/note-field-ui.md): always-visible
+        // note field below the category/destination controls. Income and expense
+        // both use this block without branching on transaction type (FR-008/009).
         tx?.let { transaction ->
             Text("Note", style = MaterialTheme.typography.labelLarge)
-            if (editingMemo) {
-                OutlinedTextField(
-                    value = memoDraft,
-                    onValueChange = { if (it.length <= EventActions.MAX_MEMO_LENGTH) memoDraft = it },
-                    label = { Text("What was this for?") },
-                    placeholder = { Text("e.g. groceries, lunch, taxi") },
-                    modifier = Modifier.fillMaxWidth(),
-                    supportingText = {
-                        Text(
-                            "Saved on this phone and synced to Go Money · " +
-                                "${memoDraft.length}/${EventActions.MAX_MEMO_LENGTH}",
-                        )
-                    },
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        // Trim/blank→null/pending-sync handled by EventActions.saveMemo.
-                        onSaveMemo(transaction.id, memoDraft)
-                        editingMemo = false
-                    }) {
-                        Text("Save note")
-                    }
-                    OutlinedButton(onClick = {
-                        // Cancel discards the draft and reverts to display mode.
-                        memoDraft = transaction.userMemo.orEmpty()
-                        editingMemo = false
-                    }) {
-                        Text("Cancel")
-                    }
+            OutlinedTextField(
+                value = memoDraft,
+                onValueChange = { if (it.length <= EventActions.MAX_MEMO_LENGTH) memoDraft = it },
+                label = { Text("What was this for?") },
+                placeholder = { Text("e.g. groceries, lunch, taxi") },
+                modifier = Modifier.fillMaxWidth(),
+                supportingText = {
+                    Text(
+                        "Saved on this phone and synced to Go Money · " +
+                            "${memoDraft.length}/${EventActions.MAX_MEMO_LENGTH}",
+                    )
+                },
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = {
+                    // Trim/blank→null/pending-sync handled by EventActions.saveMemo.
+                    onSaveMemo(transaction.id, memoDraft)
+                }) {
+                    Text("Save note")
                 }
-            } else {
-                if (!transaction.userMemo.isNullOrBlank()) {
-                    Text("Note: ${transaction.userMemo}", style = MaterialTheme.typography.bodyMedium)
+                OutlinedButton(onClick = {
+                    // Cancel reverts the draft back to the transaction's stored memo; field remains visible.
+                    memoDraft = transaction.userMemo.orEmpty()
+                }) {
+                    Text("Cancel")
                 }
-                if (transaction.memoSyncState == "pending") {
-                    val pendingLabel = if (transaction.userMemo.isNullOrBlank()) {
-                        "Note removal saved on this phone · waiting to sync"
-                    } else {
-                        "Saved on this phone · waiting to sync"
-                    }
-                    Text(pendingLabel, style = MaterialTheme.typography.labelSmall)
+            }
+            if (transaction.memoSyncState == "pending") {
+                val pendingLabel = if (transaction.userMemo.isNullOrBlank()) {
+                    "Note removal saved on this phone · waiting to sync"
+                } else {
+                    "Saved on this phone · waiting to sync"
                 }
-                OutlinedButton(onClick = { editingMemo = true }) {
-                    Text(if (transaction.userMemo.isNullOrBlank()) "Add note" else "Edit note")
-                }
+                Text(pendingLabel, style = MaterialTheme.typography.labelSmall)
             }
         }
 

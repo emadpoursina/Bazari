@@ -1,21 +1,28 @@
 package com.gomoney.capture.ui
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -24,20 +31,31 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.gomoney.capture.capture.PlatformCapturePermission
 import com.gomoney.capture.capture.ScanCoordinator
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.SettingsRepository
+import com.gomoney.capture.sync.NightlyLeftover
+import com.gomoney.capture.sync.NotificationOpen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 
 /**
  * Single-activity host with three tabs: Dashboard (US4), Events (US1), and
  * Settings (US4). Detail/debug views open from the Events tab.
  */
 class MainActivity : ComponentActivity() {
+
+    private val intentFlow = MutableStateFlow<Intent?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,11 +70,19 @@ class MainActivity : ComponentActivity() {
         // listener service has created its handle.
         ScanCoordinator.attach(applicationContext)
 
+        intentFlow.value = intent
+
         setContent {
             MaterialTheme {
-                AppTabs(db, settings, permission)
+                AppTabs(db, settings, permission, intentFlow)
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intentFlow.value = intent
     }
 }
 
@@ -65,8 +91,11 @@ private fun AppTabs(
     db: AppDatabase,
     settings: SettingsRepository,
     permission: PlatformCapturePermission,
+    intentFlow: Flow<Intent?>,
 ) {
     var selectedTab by remember { mutableStateOf(0) }
+    var selectedTxId by remember { mutableStateOf<String?>(null) }
+    var missingEventMessage by remember { mutableStateOf<String?>(null) }
     val tabs = listOf("Dashboard", "Events", "Sources", "Settings")
 
     // View models are hoisted above the tab switcher so state survives tab
@@ -105,7 +134,56 @@ private fun AppTabs(
         .collectAsStateWithLifecycleCompat(initial = emptyList())
     val recentDeliveries by db.deliveryRecordDao().observeRecent(500)
         .collectAsStateWithLifecycleCompat(initial = emptyList())
-    var selectedTxId by remember { mutableStateOf<String?>(null) }
+
+    // 009 US2 / US4: Consume notification open intents (onCreate and onNewIntent).
+    LaunchedEffect(intentFlow) {
+        intentFlow.collect { incomingIntent ->
+            if (incomingIntent == null) return@collect
+            val target = incomingIntent.getStringExtra(NotificationOpen.EXTRA_OPEN_TARGET)
+            if (target != null) {
+                val eventId = incomingIntent.getStringExtra(NotificationOpen.EXTRA_OPEN_EVENT_ID)
+                val route = withContext(Dispatchers.IO) {
+                    NotificationOpenRouting.resolveTarget(
+                        target = target,
+                        eventId = eventId,
+                        txExists = { id -> runBlocking { db.normalizedTransactionDao().byId(id) != null } },
+                        leftoverIdsProvider = {
+                            val candidateRows = runBlocking { db.normalizedTransactionDao().leftoverCandidates() }
+                            val lastCheckAt = runBlocking { settings.getNightlyLastCheckAt() }
+                            val snapshot = NightlyLeftover.computeLeftoverSnapshot(
+                                candidateRows.map {
+                                    NightlyLeftover.LeftoverCandidate(
+                                        id = it.id,
+                                        userMemo = it.userMemo,
+                                        memoSyncState = it.memoSyncState,
+                                        assignmentSyncState = it.assignmentSyncState,
+                                        deliveryState = it.deliveryState,
+                                        capturedAt = it.capturedAt,
+                                    )
+                                },
+                                lastCheckAt,
+                            )
+                            snapshot.allLeftoverIds
+                        },
+                    )
+                }
+                when (route) {
+                    is NotificationOpenRouting.Route.Detail -> {
+                        selectedTab = 1
+                        selectedTxId = route.txId
+                        missingEventMessage = null
+                    }
+                    is NotificationOpenRouting.Route.EventsList -> {
+                        selectedTab = 1
+                        selectedTxId = null
+                        missingEventMessage = route.message
+                    }
+                    NotificationOpenRouting.Route.None -> Unit
+                }
+            }
+        }
+    }
+
     fun refreshCatalogs() {
         scope.launch {
             runCatching { catalog.refreshAll(settings.currentConfigs()) }
@@ -121,7 +199,10 @@ private fun AppTabs(
     // halt reason is never stale when the user returns home.
     LaunchedEffect(selectedTab) {
         if (selectedTab == 0) dashboardViewModel.refreshConnection()
-        if (selectedTab != 1) selectedTxId = null
+        if (selectedTab != 1) {
+            selectedTxId = null
+            missingEventMessage = null
+        }
         // 006 T025 / FR-005: leaving the Events tab consumes any shown
         // banner; a scan finishing while hidden is consumed as Idle.
         ScanCoordinator.eventsTabVisible = selectedTab == 1
@@ -147,35 +228,62 @@ private fun AppTabs(
                 1 -> {
                     val detailId = selectedTxId
                     if (detailId == null) {
-                        EventsScreen(
-                            state = eventsState,
-                            onRetry = { deliveryId ->
-                                scope.launch { eventActions.retry(deliveryId) }
-                            },
-                            // 008 US1: the note editor moved to EventDetailScreen —
-                            // no onSaveMemo parameter on list rows anymore.
-                            onClearProcessed = {
-                                scope.launch { eventActions.clearProcessed() }
-                            },
-                            onClearAll = {
-                                scope.launch { eventActions.clearAll() }
-                            },
-                            // 007 FR-004/005: selective actions operate on the
-                            // selection only; unselected rows are untouched.
-                            onSyncSelected = { ids ->
-                                scope.launch { eventActions.syncSelected(ids) }
-                            },
-                            onDeleteSelected = { ids ->
-                                scope.launch { eventActions.deleteSelected(ids) }
-                            },
-                            // 006 FR-001/006: scan entry wired to the coordinator's
-                            // press-time permission check (PlatformCapturePermission).
-                            scanState = scanState,
-                            onScan = { ScanCoordinator.requestScan(permission) },
-                            // 007: per-event category from the server list.
-                            categories = catalogCategories,
-                            onOpenDetail = { selectedTxId = it },
-                        )
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            val msg = missingEventMessage
+                            if (msg != null) {
+                                Surface(
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                                    color = MaterialTheme.colorScheme.surfaceVariant,
+                                    shape = MaterialTheme.shapes.small,
+                                ) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        Text(
+                                            text = msg,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        TextButton(onClick = { missingEventMessage = null }) {
+                                            Text("Dismiss")
+                                        }
+                                    }
+                                }
+                            }
+                            Box(modifier = Modifier.weight(1f)) {
+                                EventsScreen(
+                                    state = eventsState,
+                                    onRetry = { deliveryId ->
+                                        scope.launch { eventActions.retry(deliveryId) }
+                                    },
+                                    // 008 US1: the note editor moved to EventDetailScreen —
+                                    // no onSaveMemo parameter on list rows anymore.
+                                    onClearProcessed = {
+                                        scope.launch { eventActions.clearProcessed() }
+                                    },
+                                    onClearAll = {
+                                        scope.launch { eventActions.clearAll() }
+                                    },
+                                    // 007 FR-004/005: selective actions operate on the
+                                    // selection only; unselected rows are untouched.
+                                    onSyncSelected = { ids ->
+                                        scope.launch { eventActions.syncSelected(ids) }
+                                    },
+                                    onDeleteSelected = { ids ->
+                                        scope.launch { eventActions.deleteSelected(ids) }
+                                    },
+                                    // 006 FR-001/006: scan entry wired to the coordinator's
+                                    // press-time permission check (PlatformCapturePermission).
+                                    scanState = scanState,
+                                    onScan = { ScanCoordinator.requestScan(permission) },
+                                    // 007: per-event category from the server list.
+                                    categories = catalogCategories,
+                                    onOpenDetail = { selectedTxId = it },
+                                )
+                            }
+                        }
                     } else {
                         val tx = recentTxs.firstOrNull { it.id == detailId }
                         val record = recentDeliveries.firstOrNull { it.id == detailId }

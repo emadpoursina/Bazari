@@ -1,5 +1,6 @@
 package com.gomoney.capture.sync
 
+import android.app.NotificationManager
 import android.content.Context
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
@@ -18,6 +19,7 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -305,5 +307,21 @@ class TransactionSyncWorkerTest {
         // Unselected rows are never touched (007 FR-004).
         assertEquals("sending", db.deliveryRecordDao().byId("other-stale")?.state)
         assertEquals(1, server.requestCount)
+    }
+
+    /** 009 FR-003 / T012: drain does not post or expect daytime sync-status shade items. */
+    @Test
+    fun `drain does not post daytime sync-status shade items`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val notificationManager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        seedQueued("drain-quiet", "a".repeat(63) + "9")
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"status":"created","gomoneyTxnId":13}"""))
+
+        SyncEngine.drain(db, config, deliveryRepository, dedupRepository)
+
+        val activeIds = notificationManager.activeNotifications.map { it.id }
+        assertFalse(activeIds.contains(SyncNotifier.ID_PENDING))
+        assertFalse(activeIds.contains(SyncNotifier.ID_ATTENTION))
+        assertFalse(activeIds.contains(SyncNotifier.ID_CAUGHT_UP))
     }
 }
