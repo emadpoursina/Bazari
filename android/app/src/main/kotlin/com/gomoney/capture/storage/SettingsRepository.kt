@@ -70,6 +70,17 @@ data class DefaultPreferences(
 )
 
 /**
+ * 009 FR-012–FR-014 (data-model §3a): nightly leftover evaluation bookkeeping.
+ * - [lastCheckAt]: ISO-8601 instant of previous successful evaluation.
+ * - [lastEvaluatedLocalDate]: yyyy-MM-dd in device zone of last evaluated date.
+ * Per-device, local-only, never synced.
+ */
+data class NightlyPreferences(
+    val lastCheckAt: String?,
+    val lastEvaluatedLocalDate: String?,
+)
+
+/**
  * Settings repository: toggles/URL/allow-list in Preferences DataStore, the
  * bearer token in EncryptedSharedPreferences (FR-006: no bank credentials
  * stored anywhere; only the user's own bridge token, encrypted at rest).
@@ -103,6 +114,10 @@ class SettingsRepository(
     // 008 FR-005/006: default category/account for new captures (R3).
     private val defaultCategoryIdKey = intPreferencesKey("default_category_id")
     private val defaultAccountIdKey = intPreferencesKey("default_account_id")
+
+    // 009 FR-012/013: nightly leftover evaluation keys (data-model §3a).
+    private val nightlyLastCheckAtKey = stringPreferencesKey("nightly_last_check_at")
+    private val nightlyLastEvaluatedLocalDateKey = stringPreferencesKey("nightly_last_evaluated_local_date")
 
     private val tokenKey = "bridge_bearer_token"
 
@@ -311,6 +326,37 @@ class SettingsRepository(
     suspend fun clearDefaultCategory() = edit { it.remove(defaultCategoryIdKey) }
 
     suspend fun clearDefaultAccount() = edit { it.remove(defaultAccountIdKey) }
+
+    // --- 009: nightly leftover evaluation (FR-012–FR-014) ---
+
+    fun observeNightlyPreferences(): Flow<NightlyPreferences> = dataStore.data.map { stored ->
+        NightlyPreferences(
+            lastCheckAt = stored[nightlyLastCheckAtKey],
+            lastEvaluatedLocalDate = stored[nightlyLastEvaluatedLocalDateKey],
+        )
+    }
+
+    suspend fun currentNightlyPreferences(): NightlyPreferences = observeNightlyPreferences().first()
+
+    suspend fun getNightlyLastCheckAt(): String? = currentNightlyPreferences().lastCheckAt
+
+    suspend fun getNightlyLastEvaluatedLocalDate(): String? = currentNightlyPreferences().lastEvaluatedLocalDate
+
+    suspend fun setNightlyLastCheckAt(instantIso: String) = edit { it[nightlyLastCheckAtKey] = instantIso }
+
+    suspend fun setNightlyLastEvaluatedLocalDate(dateYmd: String) = edit {
+        it[nightlyLastEvaluatedLocalDateKey] = dateYmd
+    }
+
+    suspend fun setNightlyEvaluation(instantIso: String, dateYmd: String) = edit {
+        it[nightlyLastCheckAtKey] = instantIso
+        it[nightlyLastEvaluatedLocalDateKey] = dateYmd
+    }
+
+    suspend fun clearNightlyPreferences() = edit {
+        it.remove(nightlyLastCheckAtKey)
+        it.remove(nightlyLastEvaluatedLocalDateKey)
+    }
 
     // --- internals ---
 

@@ -142,7 +142,32 @@ interface NormalizedTransactionDao {
      */
     @Query("UPDATE normalized_transactions SET currency = :currency WHERE id = :id")
     suspend fun updateCurrency(id: String, currency: String): Int
+
+    /**
+     * 009 FR-013: Candidates for nightly leftover evaluation and tap re-query.
+     * Every row returned corresponds to a normalized transaction.
+     */
+    @Query(
+        """SELECT nt.id, nt.userMemo, nt.memoSyncState, nt.assignmentSyncState,
+                  dr.state AS deliveryState, re.capturedAt
+           FROM normalized_transactions nt
+           INNER JOIN raw_events re ON re.id = nt.sourceEventId
+           LEFT JOIN delivery_records dr ON dr.id = nt.id""",
+    )
+    suspend fun leftoverCandidates(): List<LeftoverCandidateRow>
 }
+
+/**
+ * 009 data-model §3b: projected candidate row for leftover evaluation.
+ */
+data class LeftoverCandidateRow(
+    val id: String,
+    val userMemo: String?,
+    val memoSyncState: String?,
+    val assignmentSyncState: String?,
+    val deliveryState: String?,
+    val capturedAt: String,
+)
 
 @Dao
 interface DeliveryRecordDao {
