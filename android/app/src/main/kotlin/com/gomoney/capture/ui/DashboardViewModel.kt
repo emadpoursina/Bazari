@@ -9,16 +9,24 @@ import com.gomoney.capture.storage.SettingsRepository
 import com.gomoney.capture.sync.CatalogRepository
 import com.gomoney.capture.sync.SyncBanner
 import com.gomoney.capture.sync.SyncEngine
+import com.gomoney.capture.ui.theme.HomeNextStep
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+enum class HomeConnectionStatus {
+    Reachable,
+    NotReachable,
+    NotSetUpYet,
+}
+
 /**
- * Dashboard (US4, T037, FR-020): connection status + captured-today / pending /
- * sent / failed counts, all via Room Flow queries so the dashboard matches
- * reality within seconds (SC-006).
+ * Dashboard / Home (US1, US4, T015, FR-020): connection status + captured-today / waiting /
+ * failed counts + recent activity preview + single next step, backed by Room Flow queries.
+ * No spending totals, budgets, or charts (FR-020).
  */
 class DashboardViewModel(
     private val db: AppDatabase,
@@ -29,9 +37,14 @@ class DashboardViewModel(
     data class DashboardState(
         val capturedToday: Long = 0,
         val pending: Long = 0,
+        val waiting: Long = 0,
         val sent: Long = 0,
         val failed: Long = 0,
         val connection: ConnectionStatus = ConnectionStatus.UNKNOWN,
+        val connectionStatus: HomeConnectionStatus = HomeConnectionStatus.NotSetUpYet,
+        val captureBlocked: Boolean = false,
+        val nextStep: HomeNextStep = HomeNextStep.None,
+        val recentRows: List<EventRow> = emptyList(),
         val config: ServerConfiguration = ServerConfiguration(),
         val activeEndpoint: String? = null,
         val banner: SyncBanner.Banner = SyncBanner.Banner(SyncBanner.Kind.ALL_CLEAR),
@@ -47,22 +60,65 @@ class DashboardViewModel(
     val activeEndpoint: StateFlow<String?> = activeEndpointName
 
     val state: StateFlow<DashboardState> =
-        kotlinx.coroutines.flow.combine(
+        combine(
             db.normalizedTransactionDao().observeRecent(500),
             db.deliveryRecordDao().observePending(),
             settings.observe(),
             connection,
             activeEndpointName,
         ) { txs, pendingRows, config, connection, activeEndpoint ->
+            val pendingById = pendingRows.associateBy { it.id }
             val banner = SyncBanner.forPending(pendingRows)
+            val failedCount = pendingRows.count { it.state == "failed" }.toLong()
+            val waitingCount = maxOf(0L, pendingRows.size.toLong() - failedCount)
+            val captureBlocked = !permission.isNotificationListenerAccessGranted()
+            val hasDest = config.serverUrl.isNotBlank()
+
+            val connectionStatus = when {
+                !hasDest -> HomeConnectionStatus.NotSetUpYet
+                connection == ConnectionStatus.CONNECTED -> HomeConnectionStatus.Reachable
+                else -> HomeConnectionStatus.NotReachable
+            }
+
+            val nextStep = HomeNextStep.resolve(
+                notificationAccessGranted = !captureBlocked,
+                hasDestinationConfigured = hasDest,
+                queueNeedsAttention = failedCount > 0,
+            )
+
+            val recentRows = txs.take(5).map { tx ->
+                val pending = pendingById[tx.id]
+                EventRow(
+                    amountMinor = tx.amountMinor,
+                    bank = tx.bank,
+                    txAt = tx.txAt,
+                    state = pending?.state ?: "sent",
+                    errorCategory = pending?.errorCategory,
+                    txId = tx.id,
+                    type = tx.type,
+                    description = tx.description,
+                    userMemo = tx.userMemo,
+                    memoSyncState = tx.memoSyncState,
+                    currency = tx.currency,
+                    destinationAccountId = tx.destinationAccountId,
+                    categoryId = tx.categoryId,
+                    assignmentSyncState = tx.assignmentSyncState,
+                )
+            }
+
             DashboardState(
                 capturedToday = txs.count { it.txAt.startsWith(today()) }.toLong(),
                 pending = pendingRows.size.toLong(),
+                waiting = waitingCount,
                 sent = txs.count { tx ->
                     pendingRows.none { it.id == tx.id }
                 }.toLong(),
-                failed = pendingRows.count { it.state == "failed" }.toLong(),
+                failed = failedCount,
                 connection = connection,
+                connectionStatus = connectionStatus,
+                captureBlocked = captureBlocked,
+                nextStep = nextStep,
+                recentRows = recentRows,
                 config = config,
                 activeEndpoint = activeEndpoint,
                 banner = banner,
@@ -86,19 +142,13 @@ class DashboardViewModel(
             }
             val selection = BridgePing().pingFirstReachable(configs)
             val ping = selection.result
-            // Surface which endpoint answered, for multi-endpoint setups.
             activeEndpointName.value = selection.index.takeIf { it >= 0 }
                 ?.let { endpoints.getOrNull(it)?.name?.ifBlank { null } }
             connection.value = when {
-                // Unauthorized OR unreachable bridge → offline (GO_MONEY_DOWN
-                // only applies when the bridge answered but Go Money didn't).
                 ping.unauthorized || !ping.ok -> ConnectionStatus.DISCONNECTED
                 ping.gomoneyReachable -> ConnectionStatus.CONNECTED
                 else -> ConnectionStatus.GO_MONEY_DOWN
             }
-            // Every successful connection refreshes the server account +
-            // category caches so per-event selectors stay fresh (best-effort:
-            // a failure keeps the last known lists).
             if (connection.value == ConnectionStatus.CONNECTED) {
                 runCatching {
                     CatalogRepository(db.serverAccountDao(), db.serverCategoryDao())

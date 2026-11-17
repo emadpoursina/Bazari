@@ -2,6 +2,66 @@
 <resources>
     <string name="app_name">Go Money Capture</string>
 
+    <!-- Navigation -->
+    <string name="nav_home">Home</string>
+    <string name="nav_events">Events</string>
+    <string name="nav_sources">Sources</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Status chips -->
+    <string name="chip_sent">Sent</string>
+    <string name="chip_waiting">Waiting</string>
+    <string name="chip_couldnt_send">Couldn\'t send</string>
+    <string name="chip_parse_problem">Parse problem</string>
+
+    <!-- Shared Notification Access -->
+    <string name="notification_access_explanation">Capture cannot read notifications until access is granted in system settings.</string>
+    <string name="notification_access_open_settings">Open notification access settings</string>
+
+    <!-- Home screen -->
+    <string name="home_connection_reachable">Reachable</string>
+    <string name="home_connection_not_reachable">Not reachable</string>
+    <string name="home_connection_not_setup">Not set up yet</string>
+    <string name="home_captured_today">Captured today</string>
+    <string name="home_waiting_to_send">Waiting to send</string>
+    <string name="home_couldnt_send">Couldn\'t send</string>
+    <string name="home_recent_title">Recent activity</string>
+    <string name="home_recent_empty">No recent activity</string>
+    <string name="home_sync_now">Sync now</string>
+    <string name="home_healthy_title">Capture is running</string>
+    <string name="home_blocked_permission_title">Notification access missing</string>
+    <string name="home_blocked_permission_cta">Grant notification access</string>
+    <string name="home_blocked_endpoint_title">Destination not configured</string>
+    <string name="home_blocked_endpoint_cta">Configure destination</string>
+    <string name="home_blocked_queue_title">Events need attention</string>
+    <string name="home_blocked_queue_cta">View events</string>
+
+    <!-- Events screen -->
+    <string name="events_empty_title">No events yet</string>
+    <string name="events_empty_description">Nothing captured yet</string>
+    <string name="events_scan_notifications">Scan notifications</string>
+    <string name="events_select">Select</string>
+    <string name="events_done">Done</string>
+    <string name="events_select_all">Select all</string>
+    <string name="events_clear_selection">Clear selection</string>
+    <string name="events_sync_selected">Sync selected</string>
+    <string name="events_delete_selected">Delete selected</string>
+    <string name="events_clear_processed">Clear processed</string>
+    <string name="events_clear_all">Clear all</string>
+    <string name="events_retry">Retry</string>
+
+    <!-- Event detail -->
+    <string name="event_detail_title">Event detail</string>
+    <string name="event_detail_back">Back</string>
+    <string name="event_detail_type_income">Income</string>
+    <string name="event_detail_type_expense">Expense</string>
+    <string name="event_detail_assignment_title">Send assignment</string>
+    <string name="event_detail_save_assignment">Save assignment</string>
+    <string name="event_detail_note_title">Note</string>
+    <string name="event_detail_note_save">Save note</string>
+    <string name="event_detail_note_cancel">Cancel</string>
+    <string name="event_detail_debug">Debug</string>
+
     <!-- Sources tab (notification-engine) -->
     <string name="sources_tab">Sources</string>
     <string name="sources_title">Transaction sources</string>
@@ -19,6 +79,7 @@
     <!-- Source editor -->
     <string name="source_editor_add_title">Add source</string>
     <string name="source_editor_edit_title">Edit source</string>
+    <string name="source_editor_back">Back</string>
     <string name="source_field_name">Name</string>
     <string name="source_field_identifier">Identifier (package id or SMS sender)</string>
     <string name="source_field_channel">Channel</string>
@@ -34,7 +95,7 @@
     <string name="source_account_none">No accounts available</string>
     <string name="source_test">Test</string>
     <string name="source_test_sample">Sample message to test</string>
-    <string name="source_test_success">Detected %1$s of %2$d IRR</string>
+    <string name="source_test_success">Detected %1$s of %2$s</string>
     <string name="source_test_failure">Could not parse: %1$s</string>
     <string name="source_save">Save</string>
     <string name="source_cancel">Cancel</string>
@@ -44,4 +105,13 @@
     <string name="parse_errors_title">Unparsed messages</string>
     <string name="parse_errors_empty">No parse errors.</string>
     <string name="parse_errors_dismiss">Dismiss</string>
+
+    <!-- Settings sections -->
+    <string name="settings_group_destinations">Connection destinations</string>
+    <string name="settings_group_capture">Capture</string>
+    <string name="settings_group_defaults">Defaults</string>
+    <string name="settings_group_permissions">Permissions</string>
+    <string name="settings_group_diagnostics">Diagnostics</string>
+    <string name="settings_permission_granted">Granted</string>
+    <string name="settings_permission_missing">Not granted</string>
 </resources>

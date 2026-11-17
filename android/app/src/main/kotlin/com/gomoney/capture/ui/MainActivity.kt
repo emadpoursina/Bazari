@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
@@ -14,13 +15,21 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -34,14 +43,17 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.gomoney.capture.R
 import com.gomoney.capture.capture.PlatformCapturePermission
 import com.gomoney.capture.capture.ScanCoordinator
 import com.gomoney.capture.storage.AppDatabase
 import com.gomoney.capture.storage.SettingsRepository
 import com.gomoney.capture.sync.NightlyLeftover
 import com.gomoney.capture.sync.NotificationOpen
+import com.gomoney.capture.ui.theme.CaptureTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,8 +62,11 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 
 /**
- * Single-activity host with three tabs: Dashboard (US4), Events (US1), and
- * Settings (US4). Detail/debug views open from the Events tab.
+ * Single-activity host with Material 3 NavigationBar:
+ * 0: Home (DashboardScreen)
+ * 1: Events (EventsScreen / EventDetailScreen / DebugEventScreen)
+ * 2: Sources (SourcesScreen / SourceEditorScreen)
+ * 3: Settings (SettingsScreen)
  */
 class MainActivity : ComponentActivity() {
 
@@ -66,14 +81,12 @@ class MainActivity : ComponentActivity() {
         val settings = SettingsRepository(applicationContext)
         val permission = PlatformCapturePermission(applicationContext)
 
-        // 006 R1: the scan fallback needs an app context even before the
-        // listener service has created its handle.
         ScanCoordinator.attach(applicationContext)
 
         intentFlow.value = intent
 
         setContent {
-            MaterialTheme {
+            CaptureTheme {
                 AppTabs(db, settings, permission, intentFlow)
             }
         }
@@ -95,11 +108,9 @@ private fun AppTabs(
 ) {
     var selectedTab by remember { mutableStateOf(0) }
     var selectedTxId by remember { mutableStateOf<String?>(null) }
+    var showDebugScreen by remember { mutableStateOf(false) }
     var missingEventMessage by remember { mutableStateOf<String?>(null) }
-    val tabs = listOf("Dashboard", "Events", "Sources", "Settings")
 
-    // View models are hoisted above the tab switcher so state survives tab
-    // changes (remembered once per composition, not per branch).
     val dashboardViewModel = remember { DashboardViewModel(db, settings, permission) }
     val eventsViewModel = remember { EventsViewModel(db) }
     val settingsViewModel = remember { SettingsViewModel(settings, db) }
@@ -107,8 +118,6 @@ private fun AppTabs(
     val sourceEditorViewModel = remember { SourceEditorViewModel(db, settings) }
     val dashboardState by dashboardViewModel.state.collectAsStateWithLifecycleCompat()
     val eventsState by eventsViewModel.state.collectAsStateWithLifecycleCompat()
-    // 006 FR-005: the scan banner state is hoisted in ScanCoordinator so it
-    // never leaks across tab switches (research R6).
     val scanState by ScanCoordinator.state.collectAsStateWithLifecycleCompat()
     val sourcesState by sourcesViewModel.state.collectAsStateWithLifecycleCompat()
     val editorAccounts by sourceEditorViewModel.accounts.collectAsStateWithLifecycleCompat()
@@ -121,7 +130,6 @@ private fun AppTabs(
     val eventActions = remember { EventActions(context, db) }
     val settingsConnectionStatus by settingsViewModel.connectionStatus.collectAsStateWithLifecycleCompat()
 
-    // 007: per-event category assignment — cached server catalog + detail nav.
     val catalog = remember {
         com.gomoney.capture.sync.CatalogRepository(db.serverAccountDao(), db.serverCategoryDao())
     }
@@ -134,8 +142,10 @@ private fun AppTabs(
         .collectAsStateWithLifecycleCompat(initial = emptyList())
     val recentDeliveries by db.deliveryRecordDao().observeRecent(500)
         .collectAsStateWithLifecycleCompat(initial = emptyList())
+    val rawEvents by db.rawEventDao().observeAll()
+        .collectAsStateWithLifecycleCompat(initial = emptyList())
 
-    // 009 US2 / US4: Consume notification open intents (onCreate and onNewIntent).
+    // Consume notification open intents
     LaunchedEffect(intentFlow) {
         intentFlow.collect { incomingIntent ->
             if (incomingIntent == null) return@collect
@@ -171,11 +181,13 @@ private fun AppTabs(
                     is NotificationOpenRouting.Route.Detail -> {
                         selectedTab = 1
                         selectedTxId = route.txId
+                        showDebugScreen = false
                         missingEventMessage = null
                     }
                     is NotificationOpenRouting.Route.EventsList -> {
                         selectedTab = 1
                         selectedTxId = null
+                        showDebugScreen = false
                         missingEventMessage = route.message
                     }
                     NotificationOpenRouting.Route.None -> Unit
@@ -189,32 +201,52 @@ private fun AppTabs(
             runCatching { catalog.refreshAll(settings.currentConfigs()) }
         }
     }
-    // Refresh the category list whenever the detail editor opens, so the
-    // drop-down never offers a stale server list.
+
     LaunchedEffect(selectedTxId) {
         if (selectedTxId != null) refreshCatalogs()
     }
 
-    // Fresh connection status every time the dashboard is opened, so the
-    // halt reason is never stale when the user returns home.
     LaunchedEffect(selectedTab) {
         if (selectedTab == 0) dashboardViewModel.refreshConnection()
         if (selectedTab != 1) {
             selectedTxId = null
+            showDebugScreen = false
             missingEventMessage = null
         }
-        // 006 T025 / FR-005: leaving the Events tab consumes any shown
-        // banner; a scan finishing while hidden is consumed as Idle.
+        if (selectedTab != 2) {
+            editingSource = null
+        }
         ScanCoordinator.eventsTabVisible = selectedTab == 1
     }
 
     Scaffold(
         modifier = Modifier.fillMaxSize().safeDrawingPadding(),
         bottomBar = {
-            TabRow(selectedTabIndex = selectedTab) {
-                tabs.forEachIndexed { index, label ->
-                    Tab(selected = selectedTab == index, onClick = { selectedTab = index }, text = { Text(label) })
-                }
+            NavigationBar {
+                NavigationBarItem(
+                    selected = selectedTab == 0,
+                    onClick = { selectedTab = 0 },
+                    icon = { Icon(Icons.Default.Home, contentDescription = stringResource(R.string.nav_home)) },
+                    label = { Text(stringResource(R.string.nav_home)) },
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 1,
+                    onClick = { selectedTab = 1 },
+                    icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = stringResource(R.string.nav_events)) },
+                    label = { Text(stringResource(R.string.nav_events)) },
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 2,
+                    onClick = { selectedTab = 2 },
+                    icon = { Icon(Icons.Default.Share, contentDescription = stringResource(R.string.nav_sources)) },
+                    label = { Text(stringResource(R.string.nav_sources)) },
+                )
+                NavigationBarItem(
+                    selected = selectedTab == 3,
+                    onClick = { selectedTab = 3 },
+                    icon = { Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.nav_settings)) },
+                    label = { Text(stringResource(R.string.nav_settings)) },
+                )
             }
         },
     ) { padding ->
@@ -224,6 +256,14 @@ private fun AppTabs(
                     state = dashboardState,
                     onRefreshConnection = { dashboardViewModel.refreshConnection() },
                     onSyncNow = { dashboardViewModel.syncNow(context) },
+                    onOpenDetail = { txId ->
+                        selectedTab = 1
+                        selectedTxId = txId
+                        showDebugScreen = false
+                    },
+                    onGrantNotificationAccess = { openNotificationAccessSettings(context) },
+                    onOpenSettings = { selectedTab = 3 },
+                    onOpenEvents = { selectedTab = 1 },
                 )
                 1 -> {
                     val detailId = selectedTxId
@@ -232,7 +272,7 @@ private fun AppTabs(
                             val msg = missingEventMessage
                             if (msg != null) {
                                 Surface(
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                                     color = MaterialTheme.colorScheme.surfaceVariant,
                                     shape = MaterialTheme.shapes.small,
                                 ) {
@@ -258,31 +298,45 @@ private fun AppTabs(
                                     onRetry = { deliveryId ->
                                         scope.launch { eventActions.retry(deliveryId) }
                                     },
-                                    // 008 US1: the note editor moved to EventDetailScreen —
-                                    // no onSaveMemo parameter on list rows anymore.
                                     onClearProcessed = {
                                         scope.launch { eventActions.clearProcessed() }
                                     },
                                     onClearAll = {
                                         scope.launch { eventActions.clearAll() }
                                     },
-                                    // 007 FR-004/005: selective actions operate on the
-                                    // selection only; unselected rows are untouched.
                                     onSyncSelected = { ids ->
                                         scope.launch { eventActions.syncSelected(ids) }
                                     },
                                     onDeleteSelected = { ids ->
                                         scope.launch { eventActions.deleteSelected(ids) }
                                     },
-                                    // 006 FR-001/006: scan entry wired to the coordinator's
-                                    // press-time permission check (PlatformCapturePermission).
                                     scanState = scanState,
                                     onScan = { ScanCoordinator.requestScan(permission) },
-                                    // 007: per-event category from the server list.
                                     categories = catalogCategories,
-                                    onOpenDetail = { selectedTxId = it },
+                                    onOpenDetail = {
+                                        selectedTxId = it
+                                        showDebugScreen = false
+                                    },
                                 )
                             }
+                        }
+                    } else if (showDebugScreen && dashboardState.config.debugModeEnabled) {
+                        BackHandler(onBack = { showDebugScreen = false })
+                        val tx = recentTxs.firstOrNull { it.id == detailId }
+                        val record = recentDeliveries.firstOrNull { it.id == detailId }
+                        val raw = rawEvents.firstOrNull { it.id == record?.sourceEventId }
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            OutlinedButton(
+                                onClick = { showDebugScreen = false },
+                                modifier = Modifier.padding(16.dp).height(48.dp),
+                            ) {
+                                Text("Back to detail")
+                            }
+                            DebugEventScreen(
+                                debugModeEnabled = dashboardState.config.debugModeEnabled,
+                                rawEvent = raw,
+                                tx = tx,
+                            )
                         }
                     } else {
                         val tx = recentTxs.firstOrNull { it.id == detailId }
@@ -304,15 +358,19 @@ private fun AppTabs(
                             onSaveCurrency = { transactionId, currency ->
                                 scope.launch { eventActions.saveCurrency(transactionId, currency) }
                             },
-                            // 008 US1: existing save logic only (EventActions.saveMemo
-                            // owns trim/limit/pending semantics — R1).
                             onSaveMemo = { transactionId, memo ->
                                 scope.launch { eventActions.saveMemo(transactionId, memo) }
                             },
-                            onBack = { selectedTxId = null },
+                            onBack = {
+                                selectedTxId = null
+                                showDebugScreen = false
+                            },
                             catalogUnavailable = catalogState.categories ==
                                 com.gomoney.capture.sync.CatalogRepository.Status.UNAVAILABLE,
                             onRefreshCatalogs = { refreshCatalogs() },
+                            onOpenDebug = if (dashboardState.config.debugModeEnabled) {
+                                { showDebugScreen = true }
+                            } else null,
                         )
                     }
                 }
@@ -373,8 +431,6 @@ private fun AppTabs(
                     permission = permission,
                     onTestConnection = { settingsViewModel.testConnection() },
                     connectionStatus = settingsConnectionStatus,
-                    // 008 US2/US3: cached catalogs + availability for the
-                    // "Default category & default account" card (R6).
                     catalogCategories = catalogCategories,
                     catalogAccounts = catalogAccounts,
                     catalogState = catalogState,

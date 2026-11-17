@@ -3,14 +3,17 @@ package com.gomoney.capture.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -20,47 +23,40 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.gomoney.capture.R
 import com.gomoney.capture.capture.PlatformCapturePermission
 import com.gomoney.capture.storage.BridgeEndpoint
 import com.gomoney.capture.storage.DefaultPreferences
-import com.gomoney.capture.storage.ServerConfiguration
 import com.gomoney.capture.storage.ServerAccount
 import com.gomoney.capture.storage.ServerCategory
+import com.gomoney.capture.storage.ServerConfiguration
 import com.gomoney.capture.storage.SettingsRepository
-import androidx.compose.runtime.collectAsState
-import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
+import com.gomoney.capture.ui.theme.CaptureThemeTokens
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-/**
- * Settings screen (US4, T039): multiple bridge endpoints with ordered
- * fallback (stored encrypted, FR-006), "Test connection" (FR-019) wired to
- * BridgePing fallback, independent notification / SMS toggles (FR-017), and
- * permission status display (FR-024).
- *
- * 005 FR-012: there is NO bank/package/sender allow-list here — capture
- * identifiers are managed exclusively through Sources.
- *
- * Endpoints: users CRUD their own list (e.g. Tailscale first, then LAN,
- * then the rest). Ping/sync try enabled endpoints in order and use the
- * first reachable one for the whole run.
- */
 class SettingsViewModel(
     private val settings: SettingsRepository,
     private val db: com.gomoney.capture.storage.AppDatabase? = null,
 ) : ViewModel() {
 
-    val config: kotlinx.coroutines.flow.StateFlow<ServerConfiguration> =
+    val config: StateFlow<ServerConfiguration> =
         settings.observe().stateIn(
             viewModelScope,
             SharingStarted.WhileSubscribed(5_000),
@@ -74,16 +70,12 @@ class SettingsViewModel(
             emptyList(),
         )
 
-    /** Human-readable result of the last connection test (FR-019). */
     private val _connectionStatus = MutableStateFlow("Bridge: unknown (not tested)")
     val connectionStatus: StateFlow<String> = _connectionStatus
 
-    /** Per-endpoint last test result, keyed by endpoint id. */
     private val _endpointStatus = MutableStateFlow<Map<String, String>>(emptyMap())
     val endpointStatus: StateFlow<Map<String, String>> = _endpointStatus
 
-    // 008 US2 (T012): default category/account state + actions
-    // (contracts/defaults-stamping.md §1/§3 — local-first, no save button).
     val defaults: StateFlow<DefaultPreferences> =
         settings.observeDefaults().stateIn(
             viewModelScope,
@@ -110,7 +102,6 @@ class SettingsViewModel(
         }
     }
 
-    /** BridgePing fallback test: tries every enabled endpoint in order. */
     fun testConnection() {
         viewModelScope.launch {
             val configs = settings.currentConfigs()
@@ -130,8 +121,6 @@ class SettingsViewModel(
                 ping.ok -> "Bridge error: up, but Go Money unreachable$via"
                 else -> "Bridge offline: unreachable"
             }
-            // Every successful connection refreshes the server account +
-            // category caches so per-event selectors stay fresh (best-effort).
             if (ping.ok && ping.gomoneyReachable) {
                 val database = db
                 if (database != null) {
@@ -146,7 +135,6 @@ class SettingsViewModel(
         }
     }
 
-    /** Test one endpoint in isolation (does not affect the fallback order). */
     fun testEndpoint(id: String) {
         viewModelScope.launch {
             val endpoint = settings.allEndpoints().firstOrNull { it.id == id } ?: return@launch
@@ -166,7 +154,7 @@ class SettingsViewModel(
                     ping.ok -> "$label: up, Go Money unreachable"
                     else -> "$label: unreachable"
                 }
-                )
+            )
         }
     }
 
@@ -193,11 +181,6 @@ class SettingsViewModel(
 
     fun moveEndpoint(id: String, up: Boolean) = viewModelScope.launch { settings.moveEndpoint(id, up) }
 
-    /**
-     * 005 FR-015: the Settings allow-list is removed entirely — identifiers
-     * are captured only via Sources, so there is nothing to add or remove here.
-     */
-
     fun setNotificationCapture(enabled: Boolean) = viewModelScope.launch { settings.setNotificationCaptureEnabled(enabled) }
 
     fun setSmsCapture(enabled: Boolean) = viewModelScope.launch { settings.setSmsCaptureEnabled(enabled) }
@@ -205,14 +188,21 @@ class SettingsViewModel(
     fun setDebugMode(enabled: Boolean) = viewModelScope.launch { settings.setDebugModeEnabled(enabled) }
 }
 
+/**
+ * Settings screen (US5, T030, T031, T032, contracts/sources-and-settings.md §3):
+ * Five labeled sections:
+ * 1. Connection destinations
+ * 2. Capture
+ * 3. Defaults
+ * 4. Permissions
+ * 5. Diagnostics
+ */
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
     permission: PlatformCapturePermission,
     onTestConnection: () -> Unit,
     connectionStatus: String,
-    // 008 US2/US3 (T013/T014): cached server catalogs + availability gate
-    // for the "Default category & default account" card (R6, FR-010/FR-011).
     catalogCategories: List<ServerCategory> = emptyList(),
     catalogAccounts: List<ServerAccount> = emptyList(),
     catalogState: com.gomoney.capture.sync.CatalogRepository.CatalogState =
@@ -224,85 +214,140 @@ fun SettingsScreen(
     val defaults by viewModel.defaults.collectAsState()
     var showAdd by remember { mutableStateOf(false) }
     var editingId by remember { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val extendedColors = CaptureThemeTokens.extendedColors
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(text = "Settings", style = MaterialTheme.typography.titleLarge)
-
-        Text(text = "Bridge endpoints (tried in order)", style = MaterialTheme.typography.titleMedium)
         Text(
-            text = "First reachable wins for ping + sync. Put Tailscale first, then LAN, then the rest.",
-            style = MaterialTheme.typography.bodySmall,
+            text = stringResource(R.string.nav_settings),
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
         )
-        if (endpoints.isEmpty()) {
-            Text(
-                text = "No endpoints yet — add one below.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        endpoints.forEachIndexed { index, endpoint ->
-            EndpointRow(
-                endpoint = endpoint,
-                position = index + 1,
-                total = endpoints.size,
-                lastStatus = perEndpointStatus[endpoint.id],
-                onToggle = { viewModel.setEndpointEnabled(endpoint.id, it) },
-                onMoveUp = { viewModel.moveEndpoint(endpoint.id, up = true) },
-                onMoveDown = { viewModel.moveEndpoint(endpoint.id, up = false) },
-                onEdit = { editingId = endpoint.id },
-                onDelete = { viewModel.deleteEndpoint(endpoint.id) },
-                onTest = { viewModel.testEndpoint(endpoint.id) },
-            )
-        }
 
-        if (editingId == null) {
-            OutlinedButton(onClick = { showAdd = !showAdd }) {
-                Text(if (showAdd) "Hide new endpoint" else "Add endpoint")
+        // 1. Connection destinations
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_group_destinations),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "First reachable wins for ping + sync. Put Tailscale first, then LAN, then the rest.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+
+                if (endpoints.isEmpty()) {
+                    Text(
+                        text = "No endpoints yet — add one below.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                endpoints.forEachIndexed { index, endpoint ->
+                    EndpointRow(
+                        endpoint = endpoint,
+                        position = index + 1,
+                        total = endpoints.size,
+                        lastStatus = perEndpointStatus[endpoint.id],
+                        onToggle = { viewModel.setEndpointEnabled(endpoint.id, it) },
+                        onMoveUp = { viewModel.moveEndpoint(endpoint.id, up = true) },
+                        onMoveDown = { viewModel.moveEndpoint(endpoint.id, up = false) },
+                        onEdit = { editingId = endpoint.id },
+                        onDelete = { viewModel.deleteEndpoint(endpoint.id) },
+                        onTest = { viewModel.testEndpoint(endpoint.id) },
+                    )
+                }
+
+                if (editingId == null) {
+                    OutlinedButton(
+                        onClick = { showAdd = !showAdd },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    ) {
+                        Text(if (showAdd) "Hide new endpoint" else "Add endpoint")
+                    }
+                }
+                if (showAdd && editingId == null) {
+                    EndpointForm(
+                        initialName = "",
+                        initialUrl = "",
+                        initialToken = "",
+                        initialEnabled = true,
+                        confirmLabel = "Add",
+                        onCancel = { showAdd = false },
+                        onConfirm = { name, url, token, _ ->
+                            viewModel.addEndpoint(name, url, token) { showAdd = false }
+                        },
+                    )
+                }
+                val editing = editingId?.let { id -> endpoints.firstOrNull { it.id == id } }
+                if (editing != null) {
+                    EndpointForm(
+                        initialName = editing.name,
+                        initialUrl = editing.url,
+                        initialToken = "",
+                        initialEnabled = editing.enabled,
+                        confirmLabel = "Save",
+                        tokenPlaceholder = "(unchanged)",
+                        onCancel = { editingId = null },
+                        onConfirm = { name, url, token, enabled ->
+                            viewModel.updateEndpoint(editing.id, name, url, token, enabled) { editingId = null }
+                        },
+                    )
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Button(
+                        onClick = onTestConnection,
+                        modifier = Modifier.height(48.dp),
+                    ) {
+                        Text("Test connection")
+                    }
+                }
+                Text(
+                    text = connectionStatus,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
-        if (showAdd && editingId == null) {
-            EndpointForm(
-                initialName = "",
-                initialUrl = "",
-                initialToken = "",
-                initialEnabled = true,
-                confirmLabel = "Add",
-                onCancel = { showAdd = false },
-                onConfirm = { name, url, token, _ ->
-                    viewModel.addEndpoint(name, url, token) { showAdd = false }
-                },
-            )
-        }
-        val editing = editingId?.let { id -> endpoints.firstOrNull { it.id == id } }
-        if (editing != null) {
-            EndpointForm(
-                initialName = editing.name,
-                initialUrl = editing.url,
-                initialToken = "",
-                initialEnabled = editing.enabled,
-                confirmLabel = "Save",
-                tokenPlaceholder = "(unchanged)",
-                onCancel = { editingId = null },
-                onConfirm = { name, url, token, enabled ->
-                    viewModel.updateEndpoint(editing.id, name, url, token, enabled) { editingId = null }
-                },
-            )
+
+        // 2. Capture toggles
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_group_capture),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                ToggleRow("Notification capture", config.notificationCaptureEnabled) {
+                    viewModel.setNotificationCapture(it)
+                }
+                ToggleRow("SMS capture", config.smsCaptureEnabled) {
+                    viewModel.setSmsCapture(it)
+                }
+            }
         }
 
-        Button(onClick = onTestConnection) { Text("Test connection (fallback order)") }
-        Text(text = connectionStatus, style = MaterialTheme.typography.bodySmall)
-
-        ToggleRow("Notification capture", config.notificationCaptureEnabled) { viewModel.setNotificationCapture(it) }
-        ToggleRow("SMS capture", config.smsCaptureEnabled) { viewModel.setSmsCapture(it) }
-        ToggleRow("Debug mode", config.debugModeEnabled) { viewModel.setDebugMode(it) }
-
-        // 008 US2/US3 (contracts/defaults-stamping.md §3): defaults card sits
-        // between the capture toggles and the permission status (R6).
+        // 3. Defaults
         DefaultsCard(
             defaults = defaults,
             categories = catalogCategories,
@@ -317,31 +362,82 @@ fun SettingsScreen(
             onClearAccount = { viewModel.clearDefaultAccount() },
         )
 
-        // 005 FR-012: no bank/package/sender allow-list here. Capture
-        // identifiers are Sources only — see the Sources tab.
+        // 4. Permissions
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_group_permissions),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                val notifGranted = permission.isNotificationListenerAccessGranted()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Notification access", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = if (notifGranted) stringResource(R.string.settings_permission_granted) else stringResource(R.string.settings_permission_missing),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (notifGranted) extendedColors.success else extendedColors.warning,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
+                if (!notifGranted) {
+                    Text(
+                        text = stringResource(R.string.notification_access_explanation),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = { openNotificationAccessSettings(context) },
+                        modifier = Modifier.fillMaxWidth().height(48.dp),
+                    ) {
+                        Text(stringResource(R.string.notification_access_open_settings))
+                    }
+                }
 
-        Text(
-            text = if (permission.isNotificationListenerAccessGranted()) {
-                "Notification access: granted"
-            } else {
-                "Notification access: NOT granted — open system settings → Notification access"
-            },
-            style = MaterialTheme.typography.bodySmall,
-        )
-        Text(
-            text = if (permission.isSmsPermissionGranted()) "SMS permission: granted" else "SMS permission: not granted (optional)",
-            style = MaterialTheme.typography.bodySmall,
-        )
+                val smsGranted = permission.isSmsPermissionGranted()
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("SMS permission", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = if (smsGranted) stringResource(R.string.settings_permission_granted) else "Optional (not granted)",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (smsGranted) extendedColors.success else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        // 5. Diagnostics
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.settings_group_diagnostics),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                ToggleRow("Debug mode", config.debugModeEnabled) {
+                    viewModel.setDebugMode(it)
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }
 
-/**
- * 008 US2/US3 — "Default category & default account" card (T013/T017;
- * contracts/defaults-stamping.md §3): current label or "None" (FR-011),
- * independent Clear per default (FR-009), "no longer available" warning for
- * a stale stored ID (FR-010), pickers disabled with a hint while the catalog
- * is empty/unavailable — stored defaults keep applying at capture.
- */
 @Composable
 private fun DefaultsCard(
     defaults: DefaultPreferences,
@@ -356,16 +452,18 @@ private fun DefaultsCard(
 ) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
-            modifier = Modifier.padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                text = "Default category & default account",
-                style = MaterialTheme.typography.titleSmall,
+                text = stringResource(R.string.settings_group_defaults),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
             )
             Text(
                 text = "Applied to newly captured transactions only — existing events are never changed.",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             DefaultPickerRow(
                 label = "Default category",
@@ -393,7 +491,6 @@ private fun DefaultsCard(
     }
 }
 
-/** One default picker: label, dropdown (disabled when unavailable), Clear. */
 @Composable
 private fun DefaultPickerRow(
     label: String,
@@ -407,18 +504,17 @@ private fun DefaultPickerRow(
     var menuOpen by remember { mutableStateOf(false) }
     val stale = selectedId != null && options.none { (id, _) -> id == selectedId }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(text = label, style = MaterialTheme.typography.labelMedium)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            // FR-011: current label, or "None" when unset.
             Box(modifier = Modifier.weight(1f)) {
                 OutlinedButton(
                     onClick = { menuOpen = true },
-                    // Catalog empty/unavailable → picking disabled (hint below);
-                    // the stored value stays visible and keeps applying.
                     enabled = !unavailable && options.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
                 ) {
                     Text(selectedLabel ?: "None")
                 }
@@ -434,22 +530,26 @@ private fun DefaultPickerRow(
                     }
                 }
             }
-            // FR-009: independent per-default clear, immediate (local-first).
-            TextButton(onClick = onClear, enabled = selectedId != null) {
+            TextButton(
+                onClick = onClear,
+                enabled = selectedId != null,
+                modifier = Modifier.height(48.dp),
+            ) {
                 Text("Clear")
             }
         }
         if (stale) {
-            // FR-010/SC-006: stored ID no longer in the catalog.
             Text(
                 text = "$label is no longer available — pick a new one or Clear.",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
             )
         }
         if (unavailable || options.isEmpty()) {
             Text(
                 text = "Server list unavailable — pickers disabled. Saved defaults still apply to new captures.",
                 style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -468,23 +568,32 @@ private fun EndpointRow(
     onDelete: () -> Unit,
     onTest: () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface,
+        ),
+    ) {
         Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = "#$position ${endpoint.name.ifBlank { endpoint.url }}",
                     style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Medium,
                 )
                 Switch(checked = endpoint.enabled, onCheckedChange = onToggle)
             }
-            Text(text = endpoint.url, style = MaterialTheme.typography.bodySmall)
+            Text(text = endpoint.url, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (!endpoint.enabled) {
                 Text(text = "Disabled — skipped by fallback", style = MaterialTheme.typography.bodySmall)
             }
             if (lastStatus != null) {
                 Text(text = lastStatus, style = MaterialTheme.typography.bodySmall)
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
                 TextButton(onClick = onMoveUp, enabled = position > 1) { Text("↑") }
                 TextButton(onClick = onMoveDown, enabled = position < total) { Text("↓") }
                 TextButton(onClick = onTest) { Text("Test") }
@@ -512,7 +621,7 @@ private fun EndpointForm(
     var enabled by remember(initialEnabled) { mutableStateOf(initialEnabled) }
 
     Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
@@ -532,11 +641,20 @@ private fun EndpointForm(
                 modifier = Modifier.fillMaxWidth(),
             )
             ToggleRow("Enabled", enabled) { enabled = it }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { onConfirm(name, url, token, enabled) }, enabled = url.isNotBlank()) {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = { onConfirm(name, url, token, enabled) },
+                    enabled = url.isNotBlank(),
+                    modifier = Modifier.height(48.dp),
+                ) {
                     Text(confirmLabel)
                 }
-                OutlinedButton(onClick = onCancel) { Text("Cancel") }
+                OutlinedButton(
+                    onClick = onCancel,
+                    modifier = Modifier.height(48.dp),
+                ) {
+                    Text("Cancel")
+                }
             }
         }
     }
@@ -544,8 +662,12 @@ private fun EndpointForm(
 
 @Composable
 private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        Text(text = label)
+    Row(
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(text = label, style = MaterialTheme.typography.bodyMedium)
         Switch(checked = checked, onCheckedChange = onChange)
     }
 }
