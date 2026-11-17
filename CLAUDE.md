@@ -63,6 +63,16 @@ cd compose && docker compose -f docker-compose-backend.yaml up -d
 
 Verify: `docker ps` should show `app` bound to the configured `GRPC_PORT`. Migrations run on app boot.
 
+### Local Grafana (native stack)
+
+`./run-native.sh` starts Grafana in Docker (`compose/docker-compose-grafana.yaml`) on loopback port `53841`, pointed at host Postgres (`money`). Shared Caddy proxies `http://grafana.bazari.localhost` to that port. The backend gets `GRAFANA_CONFIG_URL` so the dashboard page / menu can open it.
+
+- Dashboards are provisioned from `compose/grafana/provisioning/` (Postgres datasource + “Go Money” overview).
+- Open `http://grafana.bazari.localhost`. Default login: `admin` / `admin` (anonymous Viewer is also on for local use).
+- Skip with `./run-native.sh --no-grafana`. Stop with `./stop-native.sh` (or `--grafana-only`).
+- If the backend was already running before Grafana was added, restart it so it picks up `GRAFANA_CONFIG_URL`.
+- Caddy site lives in `/Users/emad/docker-infrastructure/caddy/Caddyfile` (`grafana.bazari.localhost`). Reload with `docker exec shared_caddy caddy reload --config /etc/caddy/Caddyfile`.
+
 ### Local browser testing (Claude-in-Chrome)
 
 1. Ensure `npm start` is running (port 4200). If port busy, likely already running — skip.

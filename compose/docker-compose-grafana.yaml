@@ -1,0 +1,34 @@
+# Grafana for the native (non-Docker) Go Money stack.
+# Reads the money Postgres on the host via host.docker.internal.
+# Host port is published on loopback only; Caddy (shared_caddy) exposes
+# http://grafana.bazari.localhost → 127.0.0.1:53841.
+# Start with ./run-native.sh (or: docker compose -f compose/docker-compose-grafana.yaml up -d)
+services:
+  grafana:
+    image: grafana/grafana:latest
+    hostname: grafana
+    container_name: go-money-grafana
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SERVER_DOMAIN: ${GRAFANA_PUBLIC_HOST:-grafana.bazari.localhost}
+      GF_SERVER_ROOT_URL: ${GRAFANA_CONFIG_URL:-http://grafana.bazari.localhost}
+      GF_SERVER_HTTP_PORT: "3000"
+      DB: ${DB_DB:-money}
+      DB_USER: ${DB_USER:-postgres}
+      DB_HOST: ${GRAFANA_DB_HOST:-host.docker.internal}
+      DB_PASSWORD: ${DB_PASSWORD:-postgres}
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-53841}:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana:rw
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+
+volumes:
+  grafana_data:

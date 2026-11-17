@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 #
-# Run the Go Money backend, Angular frontend, and Android transaction bridge
-# natively (no Docker).
+# Run the Go Money backend, Angular frontend, Android transaction bridge, and
+# navasan currency-rate translator natively (no Docker).
 #
 # Postgres runs via Homebrew (postgresql@18) with the database restored from
 # the previous Docker setup. See docs in README/CLAUDE.md for details.
 #
 # The Android bridge reads its tokens/paths from .env.android-bridge
 # (see .env.android-bridge.example and specs/001-android-txn-capture/bridge-runbook.md).
+# The navasan translator reads its API key from .env.navasan (see
+# .env.navasan.example) and the backend gets EXCHANGE_RATES_URL from it, so
+# neither has to be exported by hand on every run.
 #
 # Usage:
-#   ./run-native.sh             # start the backend, frontend, and android bridge
-#   ./run-native.sh --build     # rebuild the binaries first, then start everything
-#   ./run-native.sh --no-bridge # start only the backend and frontend
+#   ./run-native.sh               # start backend, frontend, bridge, navasan, grafana
+#   ./run-native.sh --build       # rebuild the binaries first, then start everything
+#   ./run-native.sh --no-bridge   # skip the android bridge
+#   ./run-native.sh --no-navasan  # skip the rate translator (falls back to the S3 feed)
+#   ./run-native.sh --no-grafana  # skip Grafana (dashboard link in the UI stays empty)
 #
 set -euo pipefail
 
@@ -33,10 +38,16 @@ export OPS_HTTP_PORT="${OPS_HTTP_PORT:-52056}"
 FRONTEND_PORT="${FRONTEND_PORT:-4200}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
 
-# App config
+# App config (EXCHANGE_RATES_URL is resolved after the navasan config loads)
 export CURRENCY_CONFIG_BASE_CURRENCY="${CURRENCY_CONFIG_BASE_CURRENCY:-USD}"
-export EXCHANGE_RATES_URL="${EXCHANGE_RATES_URL:-http://go-money-exchange-rates.s3-website.eu-north-1.amazonaws.com/latest.json}"
 export MCP_DOCS_DIR="${MCP_DOCS_DIR:-./mcp}"
+
+# Grafana (UI "Navigate to grafana" reads GRAFANA_CONFIG_URL from the backend).
+# Host bind is loopback-only; Caddy serves http://grafana.bazari.localhost.
+GRAFANA_PORT="${GRAFANA_PORT:-53841}"
+GRAFANA_PUBLIC_HOST="${GRAFANA_PUBLIC_HOST:-grafana.bazari.localhost}"
+GRAFANA_COMPOSE_FILE="${GRAFANA_COMPOSE_FILE:-./compose/docker-compose-grafana.yaml}"
+GRAFANA_COMPOSE_PROJECT="${GRAFANA_COMPOSE_PROJECT:-go-money-grafana}"
 
 # Android transaction bridge (tokens/paths come from the env file)
 BRIDGE_ENV_FILE="${BRIDGE_ENV_FILE:-./.env.android-bridge}"
@@ -45,21 +56,44 @@ RUN_DIR=".run"
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
 BRIDGE_PID_FILE="$RUN_DIR/bridge.pid"
+NAVASAN_PID_FILE="$RUN_DIR/navasan.pid"
 BUILD=false
 START_BRIDGE=true
+START_NAVASAN=true
+START_GRAFANA=true
 
 usage() {
-  echo "Usage: $0 [--build] [--no-bridge]"
+  echo "Usage: $0 [--build] [--no-bridge] [--no-navasan] [--no-grafana]"
 }
 
 for arg in "$@"; do
   case "$arg" in
     --build) BUILD=true ;;
     --no-bridge) START_BRIDGE=false ;;
+    --no-navasan) START_NAVASAN=false ;;
+    --no-grafana) START_GRAFANA=false ;;
     -h|--help) usage; exit 0 ;;
     *) echo "!! unknown option: $arg" >&2; usage >&2; exit 1 ;;
   esac
 done
+
+# Navasan translator (custom currency rates): load the API key and any
+# overrides from .env.navasan once, then derive the feed URL the backend polls.
+# .env.navasan is gitignored — never commit the key.
+NAVASAN_ENV_FILE="${NAVASAN_ENV_FILE:-./.env.navasan}"
+if [[ -f "$NAVASAN_ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$NAVASAN_ENV_FILE"
+  set +a
+fi
+NAVASAN_PORT="${NAVASAN_PORT:-${PORT:-8088}}"
+
+if $START_NAVASAN; then
+  export EXCHANGE_RATES_URL="${EXCHANGE_RATES_URL:-http://127.0.0.1:$NAVASAN_PORT/latest.json}"
+else
+  export EXCHANGE_RATES_URL="${EXCHANGE_RATES_URL:-http://go-money-exchange-rates.s3-website.eu-north-1.amazonaws.com/latest.json}"
+fi
 
 mkdir -p "$RUN_DIR"
 
@@ -112,9 +146,11 @@ kill_tree() {
 BACKEND_PID=""
 FRONTEND_PID=""
 BRIDGE_PID=""
+NAVASAN_PID=""
 STARTED_BACKEND=false
 STARTED_FRONTEND=false
 STARTED_BRIDGE=false
+STARTED_NAVASAN=false
 STARTUP_COMPLETE=false
 
 cleanup_failed_start() {
@@ -125,6 +161,10 @@ cleanup_failed_start() {
     if $STARTED_BRIDGE; then
       kill_tree "$BRIDGE_PID"
       rm -f "$BRIDGE_PID_FILE"
+    fi
+    if $STARTED_NAVASAN; then
+      kill_tree "$NAVASAN_PID"
+      rm -f "$NAVASAN_PID_FILE"
     fi
     if $STARTED_FRONTEND; then
       kill_tree "$FRONTEND_PID"
@@ -181,6 +221,75 @@ if $START_BRIDGE && ! is_running "$BRIDGE_PID_FILE"; then
   if [[ ! -x bin/go-money-android-bridge ]]; then
     echo "!! bin/go-money-android-bridge not found. Run: ./run-native.sh --build" >&2
     exit 1
+  fi
+fi
+
+if $START_NAVASAN && ! is_running "$NAVASAN_PID_FILE"; then
+  if $BUILD; then
+    echo ">> building bin/go-money-navasan-translator"
+    go build -o bin/go-money-navasan-translator ./cmd/navasan-translator
+  fi
+
+  if [[ ! -x bin/go-money-navasan-translator ]]; then
+    echo "!! bin/go-money-navasan-translator not found. Run: ./run-native.sh --build" >&2
+    exit 1
+  fi
+
+  if [[ -z "${NAVASAN_API_KEY:-}" || "$NAVASAN_API_KEY" == replace-with-* ]]; then
+    echo "!! NAVASAN_API_KEY is not set (or still the placeholder)" >&2
+    echo "   copy .env.navasan.example to .env.navasan, add your key, and retry (or pass --no-navasan)" >&2
+    exit 1
+  fi
+fi
+
+# The rate feed must be up before the backend: the backend syncs on startup.
+if ! $START_NAVASAN; then
+  echo ">> skipping navasan translator (--no-navasan, rates from $EXCHANGE_RATES_URL)"
+elif is_running "$NAVASAN_PID_FILE"; then
+  NAVASAN_PID=$(cat "$NAVASAN_PID_FILE")
+  echo ">> navasan translator already running (pid $NAVASAN_PID)"
+else
+  rm -f "$NAVASAN_PID_FILE"
+  echo ">> starting navasan-translator (http://127.0.0.1:$NAVASAN_PORT/latest.json -> $EXCHANGE_RATES_URL)"
+  PORT="$NAVASAN_PORT" nohup ./bin/go-money-navasan-translator > "$RUN_DIR/navasan.log" 2>&1 &
+  NAVASAN_PID=$!
+  STARTED_NAVASAN=true
+  echo "$NAVASAN_PID" > "$NAVASAN_PID_FILE"
+
+  if ! wait_tcp 127.0.0.1 "$NAVASAN_PORT" "navasan translator" 30 "$NAVASAN_PID"; then
+    tail -n 20 "$RUN_DIR/navasan.log" >&2
+    exit 1
+  fi
+  if ! kill -0 "$NAVASAN_PID" 2>/dev/null; then
+    echo "!! navasan translator exited during startup:" >&2
+    tail -n 20 "$RUN_DIR/navasan.log" >&2
+    exit 1
+  fi
+
+  # Best effort: a bad API key would otherwise fail silently until rates stop moving.
+  if command -v curl >/dev/null 2>&1 && ! curl -fsS -m 15 "http://127.0.0.1:$NAVASAN_PORT/latest.json" >/dev/null 2>&1; then
+    echo "!! navasan feed not serving yet (check $RUN_DIR/navasan.log) — continuing anyway" >&2
+  fi
+fi
+
+if ! $START_GRAFANA; then
+  echo ">> skipping local grafana (--no-grafana)"
+elif ! command -v docker >/dev/null 2>&1; then
+  echo "!! docker is required for Grafana (or pass --no-grafana)" >&2
+  exit 1
+else
+  export GRAFANA_CONFIG_URL="${GRAFANA_CONFIG_URL:-http://${GRAFANA_PUBLIC_HOST}}"
+  export GRAFANA_PUBLIC_HOST
+  export GRAFANA_PORT
+  echo ">> starting grafana (${GRAFANA_CONFIG_URL})"
+  docker compose -f "$GRAFANA_COMPOSE_FILE" --project-name "$GRAFANA_COMPOSE_PROJECT" up -d
+  if ! wait_tcp 127.0.0.1 "$GRAFANA_PORT" "grafana" 60; then
+    docker compose -f "$GRAFANA_COMPOSE_FILE" --project-name "$GRAFANA_COMPOSE_PROJECT" logs --tail 30 >&2
+    exit 1
+  fi
+  if is_running "$BACKEND_PID_FILE"; then
+    echo "!! backend is already running and will not see GRAFANA_CONFIG_URL until you restart it:" >&2
+    echo "   ./stop-native.sh --backend-only && ./run-native.sh" >&2
   fi
 fi
 
@@ -284,6 +393,16 @@ if $START_BRIDGE; then
   echo "  android-bridge  http://$BRIDGE_HOST:$BRIDGE_PORT (log $RUN_DIR/bridge.log)"
 else
   echo "  android-bridge  skipped"
+fi
+if $START_NAVASAN; then
+  echo "  navasan rates   http://127.0.0.1:$NAVASAN_PORT/latest.json (log $RUN_DIR/navasan.log)"
+else
+  echo "  navasan rates   skipped ($EXCHANGE_RATES_URL)"
+fi
+if $START_GRAFANA; then
+  echo "  grafana         $GRAFANA_CONFIG_URL  (admin / ${GRAFANA_ADMIN_PASSWORD:-admin})"
+else
+  echo "  grafana         skipped"
 fi
 echo
 echo "Set the API host in the browser console, then refresh the page:"

@@ -124,6 +124,7 @@ WHERE type IN (1, 4)               -- Assets and liabilities (for net worth)
 | [lua/convert_from_withdrawal_to_transfer.lua](lua/convert_from_withdrawal_to_transfer.lua) | Convert withdrawal to transfer |
 | [lua/scheduled_withdrawal.lua](lua/scheduled_withdrawal.lua) | Scheduled recurring transaction |
 | [reporting/queries/withdrawals_by_tag.sql](reporting/queries/withdrawals_by_tag.sql) | SQL report example |
+| [compose/grafana/provisioning](../compose/grafana/provisioning) | Grafana Postgres datasource + Go Money overview dashboard |
 
 ---
 

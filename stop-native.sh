@@ -6,10 +6,12 @@
 # (`shared_postgres`) is never touched — other projects depend on it.
 #
 # Usage:
-#   ./stop-native.sh                 # backend + frontend + android bridge
+#   ./stop-native.sh                 # backend + frontend + android bridge + navasan + grafana
 #   ./stop-native.sh --backend-only
 #   ./stop-native.sh --frontend-only
 #   ./stop-native.sh --bridge-only
+#   ./stop-native.sh --navasan-only
+#   ./stop-native.sh --grafana-only
 #
 set -euo pipefail
 
@@ -19,20 +21,39 @@ RUN_DIR=".run"
 BACKEND_PID_FILE="$RUN_DIR/backend.pid"
 FRONTEND_PID_FILE="$RUN_DIR/frontend.pid"
 BRIDGE_PID_FILE="$RUN_DIR/bridge.pid"
+NAVASAN_PID_FILE="$RUN_DIR/navasan.pid"
 
 STOP_BACKEND=true
 STOP_FRONTEND=true
 STOP_BRIDGE=true
+STOP_NAVASAN=true
+STOP_GRAFANA=true
+
+GRAFANA_PORT="${GRAFANA_PORT:-53841}"
+GRAFANA_COMPOSE_FILE="${GRAFANA_COMPOSE_FILE:-./compose/docker-compose-grafana.yaml}"
+GRAFANA_COMPOSE_PROJECT="${GRAFANA_COMPOSE_PROJECT:-go-money-grafana}"
+
+# Same env file as run-native.sh, only so the reported navasan port is accurate.
+NAVASAN_ENV_FILE="${NAVASAN_ENV_FILE:-./.env.navasan}"
+if [[ -f "$NAVASAN_ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$NAVASAN_ENV_FILE"
+  set +a
+fi
+NAVASAN_PORT="${NAVASAN_PORT:-${PORT:-8088}}"
 
 usage() {
-  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 for arg in "$@"; do
   case "$arg" in
-    --backend-only) STOP_FRONTEND=false; STOP_BRIDGE=false ;;
-    --frontend-only) STOP_BACKEND=false; STOP_BRIDGE=false ;;
-    --bridge-only) STOP_BACKEND=false; STOP_FRONTEND=false ;;
+    --backend-only) STOP_FRONTEND=false; STOP_BRIDGE=false; STOP_NAVASAN=false; STOP_GRAFANA=false ;;
+    --frontend-only) STOP_BACKEND=false; STOP_BRIDGE=false; STOP_NAVASAN=false; STOP_GRAFANA=false ;;
+    --bridge-only) STOP_BACKEND=false; STOP_FRONTEND=false; STOP_NAVASAN=false; STOP_GRAFANA=false ;;
+    --navasan-only) STOP_BACKEND=false; STOP_FRONTEND=false; STOP_BRIDGE=false; STOP_GRAFANA=false ;;
+    --grafana-only) STOP_BACKEND=false; STOP_FRONTEND=false; STOP_BRIDGE=false; STOP_NAVASAN=false ;;
     -h|--help) usage; exit 0 ;;
     *) echo "!! unknown option: $arg" >&2; usage >&2; exit 1 ;;
   esac
@@ -87,6 +108,12 @@ if $STOP_BACKEND; then
   report_port "${OPS_HTTP_PORT:-52056}"
 fi
 
+# Stopped right after the backend, which is its only consumer.
+if $STOP_NAVASAN; then
+  stop_one "$NAVASAN_PID_FILE" "navasan translator"
+  report_port "$NAVASAN_PORT"
+fi
+
 if $STOP_FRONTEND; then
   stop_one "$FRONTEND_PID_FILE" "frontend"
   report_port "${FRONTEND_PORT:-4200}"
@@ -95,4 +122,14 @@ fi
 if $STOP_BRIDGE; then
   stop_one "$BRIDGE_PID_FILE" "android bridge"
   report_port "${BRIDGE_PORT:-8788}"
+fi
+
+if $STOP_GRAFANA; then
+  if command -v docker >/dev/null 2>&1 && [[ -f "$GRAFANA_COMPOSE_FILE" ]]; then
+    docker compose -f "$GRAFANA_COMPOSE_FILE" --project-name "$GRAFANA_COMPOSE_PROJECT" stop >/dev/null 2>&1 || true
+    echo ">> stopped grafana"
+  else
+    echo ">> grafana is not running"
+  fi
+  report_port "$GRAFANA_PORT"
 fi
