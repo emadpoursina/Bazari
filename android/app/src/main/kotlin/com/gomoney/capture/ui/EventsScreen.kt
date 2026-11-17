@@ -1,25 +1,35 @@
 package com.gomoney.capture.ui
 
 import android.content.Context
-import android.content.Intent
-import android.provider.Settings
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -30,25 +40,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.gomoney.capture.R
 import com.gomoney.capture.capture.ScanUiState
 import com.gomoney.capture.storage.AppDatabase
+import com.gomoney.capture.ui.theme.AmountFormat
+import com.gomoney.capture.ui.theme.CaptureThemeTokens
+import com.gomoney.capture.ui.theme.EventDayGrouping
+import com.gomoney.capture.ui.theme.StatusChip
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
 
-/**
- * Recent-events list (US1, T021): amount, bank, type, time, description and
- * delivery state per row — backed by real Room Flows so captured/delivery
- * state can be verified on-device. Rows are normalized transactions joined
- * with their delivery record; parse errors (no normalized transaction) are
- * shown with the sanitized error detail, never raw message text (FR-023).
- */
 data class EventRow(
     val amountMinor: Long,
     val bank: String,
@@ -60,9 +71,7 @@ data class EventRow(
     val description: String = "",
     val userMemo: String? = null,
     val memoSyncState: String = "synced",
-    // 005 FR-004: the transaction's own currency; blank = unknown (no label).
     val currency: String = "",
-    // Per-event assignment (007): chosen destination/category + sync state.
     val destinationAccountId: Int? = null,
     val categoryId: Int? = null,
     val assignmentSyncState: String = "synced",
@@ -86,7 +95,7 @@ class EventsViewModel(db: AppDatabase) : ViewModel() {
                 amountMinor = tx.amountMinor,
                 bank = tx.bank,
                 txAt = tx.txAt,
-                state = delivery?.state ?: "parsed",
+                state = delivery?.state ?: "sent",
                 errorCategory = delivery?.errorCategory,
                 txId = tx.id,
                 type = tx.type,
@@ -99,14 +108,13 @@ class EventsViewModel(db: AppDatabase) : ViewModel() {
                 assignmentSyncState = tx.assignmentSyncState,
             )
         }
-        // Parse-error rows: delivery record without a normalized transaction.
         val txIds = txs.map { it.id }.toSet()
         val errorRows = deliveries.filter { it.id !in txIds }.map { delivery ->
             val raw = rawById[delivery.sourceEventId]
             EventRow(
-                amountMinor = 0,
-                bank = raw?.sourcePackage ?: "unknown",
-                txAt = raw?.postedAt ?: delivery.lastAttemptAt.orEmpty(),
+                amountMinor = 0L,
+                bank = raw?.sourcePackage ?: "Unknown",
+                txAt = raw?.postedAt ?: java.time.Instant.now().toString(),
                 state = delivery.state,
                 errorCategory = delivery.errorCategory ?: "parse_error",
                 txId = delivery.id,
@@ -117,34 +125,31 @@ class EventsViewModel(db: AppDatabase) : ViewModel() {
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), EventsState())
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun EventsScreen(
     state: EventsViewModel.EventsState,
     onRetry: (String) -> Unit = {},
     onClearProcessed: () -> Unit = {},
     onClearAll: () -> Unit = {},
-    // 008 US1/FR-001: rows are display-only — the note editor moved to
-    // EventDetailScreen (contracts/note-editing-ui.md §1); onSaveMemo is gone.
-    // 006 FR-001/005: scan control + inline banner (contracts/scan-coordination.md §4).
     scanState: ScanUiState = ScanUiState.Idle,
     onScan: () -> Unit = {},
-    // 007: per-event category assignment opens the detail editor.
     categories: List<com.gomoney.capture.storage.ServerCategory> = emptyList(),
     onOpenDetail: (String) -> Unit = {},
-    // 007 FR-001/004/005: selective sync/delete operate on the selection only.
     onSyncSelected: (Set<String>) -> Unit = {},
     onDeleteSelected: (Set<String>) -> Unit = {},
 ) {
     var showClearAllDialog by remember { mutableStateOf(false) }
     var showDeleteSelectedDialog by remember { mutableStateOf(false) }
-    // 007 FR-001/009: transient selection keyed by stable event ID.
+    var isSelectionMode by remember { mutableStateOf(false) }
     var selectedIds by remember { mutableStateOf(setOf<String>()) }
-    // Prune IDs whose rows disappeared (deleted elsewhere / list refresh).
+    var showOverflowMenu by remember { mutableStateOf(false) }
+
     val liveIds = state.rows.map { it.txId }.toSet()
     if (!liveIds.containsAll(selectedIds)) {
         selectedIds = selectedIds.intersect(liveIds)
     }
+
     if (showClearAllDialog) {
         AlertDialog(
             onDismissRequest = { showClearAllDialog = false },
@@ -166,6 +171,7 @@ fun EventsScreen(
             },
         )
     }
+
     if (showDeleteSelectedDialog) {
         val count = selectedIds.size
         AlertDialog(
@@ -183,6 +189,7 @@ fun EventsScreen(
                     val ids = selectedIds
                     showDeleteSelectedDialog = false
                     selectedIds = emptySet()
+                    isSelectionMode = false
                     onDeleteSelected(ids)
                 }) { Text("Delete selected") }
             },
@@ -191,112 +198,216 @@ fun EventsScreen(
             },
         )
     }
+
     val context = LocalContext.current
-    LazyColumn(
-        modifier = Modifier.fillMaxSize().padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        // Contract §4: the banner is the FIRST item, directly above the row.
-        if (scanState !is ScanUiState.Idle) {
-            item(key = "scan-banner") {
-                ScanBanner(
-                    state = scanState,
-                    onOpenNotificationSettings = { openNotificationAccessSettings(context) },
-                )
-            }
-        }
-        item(key = "event-actions") {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
+    val dayGroups = remember(state.rows) { EventDayGrouping.groupByDay(state.rows) }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        // App bar / Selection Header
+        Surface(
+            tonalElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "Selected ${selectedIds.size} / ${state.rows.size}",
-                    style = MaterialTheme.typography.labelMedium,
-                )
-                // 007 FR-007: wrapping bar — every control visible without
-                // horizontal scrolling or clipping on a 360dp phone.
-                FlowRow(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    OutlinedButton(onClick = { selectedIds = liveIds }) {
-                        Text("Select all")
-                    }
-                    OutlinedButton(
-                        onClick = { selectedIds = emptySet() },
-                        enabled = selectedIds.isNotEmpty(),
+                if (isSelectionMode) {
+                    Text(
+                        text = "${selectedIds.size} selected",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Clear")
+                        TextButton(onClick = {
+                            selectedIds = if (selectedIds.size == liveIds.size) emptySet() else liveIds
+                        }) {
+                            Text(if (selectedIds.size == liveIds.size) "Deselect" else "All")
+                        }
+                        if (selectedIds.isNotEmpty()) {
+                            TextButton(onClick = { onSyncSelected(selectedIds) }) {
+                                Text("Sync")
+                            }
+                            TextButton(onClick = { showDeleteSelectedDialog = true }) {
+                                Text("Delete")
+                            }
+                        }
+                        TextButton(onClick = {
+                            isSelectionMode = false
+                            selectedIds = emptySet()
+                        }) {
+                            Text("Done")
+                        }
                     }
-                    OutlinedButton(
-                        onClick = { onSyncSelected(selectedIds) },
-                        enabled = selectedIds.isNotEmpty(),
+                } else {
+                    Text(
+                        text = stringResource(R.string.nav_events),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Sync selected (${selectedIds.size})")
+                        Button(
+                            onClick = onScan,
+                            enabled = scanState !is ScanUiState.Running,
+                        ) {
+                            Text(stringResource(R.string.events_scan_notifications))
+                        }
+                        Box {
+                            IconButton(onClick = { showOverflowMenu = true }) {
+                                Icon(Icons.Default.MoreVert, contentDescription = "More options")
+                            }
+                            DropdownMenu(
+                                expanded = showOverflowMenu,
+                                onDismissRequest = { showOverflowMenu = false },
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.events_select)) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        isSelectionMode = true
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.events_clear_processed)) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        onClearProcessed()
+                                    },
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.events_clear_all)) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        showClearAllDialog = true
+                                    },
+                                )
+                            }
+                        }
                     }
-                    OutlinedButton(
-                        onClick = { showDeleteSelectedDialog = true },
-                        enabled = selectedIds.isNotEmpty(),
-                    ) {
-                        Text("Delete selected (${selectedIds.size})")
-                    }
-                    OutlinedButton(onClick = onClearProcessed) { Text("Clear processed") }
-                    OutlinedButton(onClick = { showClearAllDialog = true }) { Text("Clear all") }
-                    OutlinedButton(
-                        onClick = onScan,
-                        // FR-008: the control shows progress and disables while running.
-                        enabled = scanState !is ScanUiState.Running,
-                    ) { Text("Scan notifications") }
                 }
             }
         }
-        // Contract §4: the action row (and scan control) render even when the
-        // list is empty — P1 must be testable with zero events.
-        if (state.rows.isEmpty()) {
-            item(key = "empty-state") {
-                Text("No captured transactions yet.", style = MaterialTheme.typography.bodyMedium)
+
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            // Contract §3: Scan banner is the first LazyColumn item
+            if (scanState !is ScanUiState.Idle) {
+                item(key = "scan-banner") {
+                    ScanBanner(
+                        state = scanState,
+                        onOpenNotificationSettings = { openNotificationAccessSettings(context) },
+                    )
+                }
             }
-        } else {
-            items(state.rows, key = { it.txId }) { row ->
-                EventCard(
-                    row = row,
-                    onRetry = onRetry,
-                    categories = categories,
-                    onOpenDetail = onOpenDetail,
-                    selected = row.txId in selectedIds,
-                    onToggleSelected = { checked ->
-                        selectedIds = if (checked) selectedIds + row.txId else selectedIds - row.txId
-                    },
-                )
+
+            // Empty state
+            if (state.rows.isEmpty()) {
+                item(key = "empty-state") {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 48.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(
+                            text = stringResource(R.string.events_empty_title),
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = stringResource(R.string.events_empty_description),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Button(
+                            onClick = onScan,
+                            enabled = scanState !is ScanUiState.Running,
+                        ) {
+                            Text(stringResource(R.string.events_scan_notifications))
+                        }
+                    }
+                }
+            } else {
+                dayGroups.forEach { group ->
+                    stickyHeader(key = "header-${group.date}") {
+                        Surface(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            color = MaterialTheme.colorScheme.background,
+                        ) {
+                            Text(
+                                text = group.headerLabel,
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(vertical = 4.dp),
+                            )
+                        }
+                    }
+
+                    items(group.rows, key = { it.txId }) { row ->
+                        EventCard(
+                            row = row,
+                            onRetry = onRetry,
+                            onOpenDetail = onOpenDetail,
+                            selected = row.txId in selectedIds,
+                            isSelectionMode = isSelectionMode,
+                            onToggleSelected = { checked ->
+                                selectedIds = if (checked) selectedIds + row.txId else selectedIds - row.txId
+                            },
+                            onLongClick = {
+                                if (!isSelectionMode) {
+                                    isSelectionMode = true
+                                    selectedIds = setOf(row.txId)
+                                }
+                            },
+                        )
+                    }
+                }
+                item(key = "footer-spacing") {
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
             }
         }
     }
 }
 
-/**
- * Inline scan banner (006 FR-005/006/008, contracts/scan-coordination.md §2):
- * progress while running, examined/added/skipped wording on completion, and
- * actionable settings guidance when the scan cannot run at all.
- */
 @Composable
 private fun ScanBanner(
     state: ScanUiState,
     onOpenNotificationSettings: () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+    ) {
         Column(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             when (state) {
                 ScanUiState.Idle -> Unit
                 ScanUiState.Running -> Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
                     Text(
                         "Scanning active notifications…",
                         style = MaterialTheme.typography.bodyMedium,
@@ -307,151 +418,145 @@ private fun ScanBanner(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 ScanUiState.Blocked -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // FR-006, Q5: clear message + a button that opens the
-                    // system notification-access screen. No scan started.
                     Text(
-                        "Notification-read access is missing, so scanning can't run. " +
-                            "Grant this app access to read notifications in system settings, " +
-                            "then press Scan notifications again.",
+                        stringResource(R.string.notification_access_explanation),
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    SettingsButton(onOpenNotificationSettings)
+                    Button(onClick = onOpenNotificationSettings) {
+                        Text(stringResource(R.string.notification_access_open_settings))
+                    }
                 }
                 ScanUiState.Unavailable -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Research R9: same guidance button + a "try again" hint
-                    // (re-enabling access re-binds the listener).
                     Text(
-                        "Can't read the active notifications right now. Check that notification " +
-                            "access for this app is enabled in system settings, then try again.",
+                        "Can't read active notifications. Verify notification access in system settings.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    SettingsButton(onOpenNotificationSettings)
-                    Text(
-                        "Tip: toggle notification access off and on, then try again.",
-                        style = MaterialTheme.typography.labelMedium,
-                    )
+                    Button(onClick = onOpenNotificationSettings) {
+                        Text(stringResource(R.string.notification_access_open_settings))
+                    }
                 }
             }
         }
     }
 }
 
-@Composable
-private fun SettingsButton(onClick: () -> Unit) {
-    OutlinedButton(onClick = onClick) { Text("Open notification access settings") }
-}
-
-/**
- * Result wording (contracts/scan-coordination.md §2): empty shade, nothing
- * new, or the full examined/added/skipped counts.
- */
 private fun scanResultText(result: ScanUiState.Result): String = when {
     result.examined == 0 -> "No active notifications."
     result.added == 0 -> "No new events found · Examined ${result.examined} · Skipped ${result.skipped}"
     else -> "Examined ${result.examined} · Added ${result.added} · Skipped ${result.skipped}"
 }
 
-/** FR-006: deep link to the system notification-access screen with a fallback. */
-private fun openNotificationAccessSettings(context: Context) {
-    runCatching {
-        context.startActivity(
-            Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
-                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-        )
-    }.onFailure {
-        runCatching {
-            context.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        }
-    }
-}
-
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun EventCard(
     row: EventRow,
     onRetry: (String) -> Unit,
-    categories: List<com.gomoney.capture.storage.ServerCategory> = emptyList(),
-    onOpenDetail: (String) -> Unit = {},
-    // 007 FR-001: per-event selection checkbox.
-    selected: Boolean = false,
-    onToggleSelected: (Boolean) -> Unit = {},
+    onOpenDetail: (String) -> Unit,
+    selected: Boolean,
+    isSelectionMode: Boolean,
+    onToggleSelected: (Boolean) -> Unit,
+    onLongClick: () -> Unit,
 ) {
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+    val extendedColors = CaptureThemeTokens.extendedColors
+    val isExpense = row.type.equals("expense", ignoreCase = true)
+    val sign = if (isExpense) "-" else "+"
+    val amountColor = if (isExpense) extendedColors.expense else extendedColors.income
+    val formattedAmount = if (row.amountMinor == 0L && row.errorCategory != null) {
+        "—"
+    } else {
+        AmountFormat.formatAmountMinor(row.amountMinor, row.currency)
+    }
+
+    val timeLabel = runCatching {
+        OffsetDateTime.parse(row.txAt).format(DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT))
+    }.getOrElse { row.txAt.takeLast(8) }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {
+                    if (isSelectionMode) {
+                        onToggleSelected(!selected)
+                    } else {
+                        onOpenDetail(row.txId)
+                    }
+                },
+                onLongClick = onLongClick,
+            ),
+        colors = CardDefaults.cardColors(
+            containerColor = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
+        ),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (isSelectionMode) {
                 Checkbox(
                     checked = selected,
                     onCheckedChange = onToggleSelected,
                 )
-                Text(
-                    // 005 FR-003/004: never a hardcoded rial label. Blank
-                    // (unknown) currency shows the bare amount.
-                    text = if (row.amountMinor == 0L) "—"
-                    else row.currency.takeIf { it.isNotBlank() }?.let { "${row.amountMinor} $it" }
-                        ?: "${row.amountMinor}",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(text = row.state.uppercase(), style = MaterialTheme.typography.labelMedium)
             }
-            Text(text = "${row.bank} · ${row.type}", style = MaterialTheme.typography.bodySmall)
-            if (row.description.isNotBlank()) {
-                Text(text = row.description, style = MaterialTheme.typography.bodySmall, maxLines = 2)
-            }
-            Text(text = formatTime(row.txAt), style = MaterialTheme.typography.bodySmall)
-            row.errorCategory?.let {
-                Text(text = "category: $it", style = MaterialTheme.typography.labelSmall)
-            }
-            // 007: chosen server category for this event (synced automatically).
-            if (row.amountMinor > 0L) {
-                val categoryLabel = row.categoryId?.let { id ->
-                    categories.firstOrNull { it.id == id }?.label
-                }
-                Text(
-                    text = "Event category: ${categoryLabel ?: "Default"}",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                if (row.assignmentSyncState == "pending") {
+
+            Column(modifier = Modifier.weight(1f)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     Text(
-                        "Category saved on this phone · waiting to sync",
-                        style = MaterialTheme.typography.labelSmall,
+                        text = if (formattedAmount == "—") "—" else "$sign$formattedAmount",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = if (formattedAmount == "—") MaterialTheme.colorScheme.onSurface else amountColor,
+                    )
+                    StatusChip(
+                        state = row.state,
+                        errorCategory = row.errorCategory,
+                        hasNormalizedTx = row.amountMinor > 0L || row.errorCategory == null,
                     )
                 }
-            }
 
-            // 008 US1 (FR-001/003): display-only row — note text + pending
-            // labels retained exactly; the edit affordance lives on the detail
-            // screen (contracts/note-editing-ui.md §1).
-            if (row.amountMinor > 0L) {
-                if (!row.userMemo.isNullOrBlank()) {
-                    Text("Note: ${row.userMemo}", style = MaterialTheme.typography.bodyMedium)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "${row.bank} · $timeLabel",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                if (row.memoSyncState == "pending") {
-                    val pendingLabel = if (row.userMemo.isNullOrBlank()) {
-                        "Note removal saved on this phone · waiting to sync"
-                    } else {
-                        "Saved on this phone · waiting to sync"
+
+                val preview = row.userMemo?.ifBlank { null } ?: row.description
+                if (preview.isNotBlank()) {
+                    Text(
+                        text = preview,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                if (row.state == "failed") {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedButton(
+                        onClick = { onRetry(row.txId) },
+                        modifier = Modifier.height(48.dp),
+                    ) {
+                        Text(stringResource(R.string.events_retry))
                     }
-                    Text(pendingLabel, style = MaterialTheme.typography.labelSmall)
-                }
-            }
-
-            if (row.state == "failed") {
-                OutlinedButton(onClick = { onRetry(row.txId) }) {
-                    Text("Retry delivery")
-                }
-            }
-            if (row.amountMinor > 0L) {
-                OutlinedButton(onClick = { onOpenDetail(row.txId) }) {
-                    Text("Set category")
                 }
             }
         }
     }
 }
-
-private fun formatTime(txAt: String): String = runCatching {
-    OffsetDateTime.parse(txAt).format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
-}.getOrDefault(txAt)
