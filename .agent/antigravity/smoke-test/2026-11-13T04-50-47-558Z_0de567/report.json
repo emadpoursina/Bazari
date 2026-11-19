@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "jobName": "smoke-test",
+  "runId": "2026-11-13T04-50-47-558Z_0de567",
+  "runDir": "/Users/emad/Projects/playground/Bazari/.agent/antigravity/smoke-test/2026-11-13T04-50-47-558Z_0de567",
+  "backend": "agy-cli",
+  "lifecycle": "completed",
+  "exitCode": 0,
+  "signal": null,
+  "timedOut": false,
+  "timeoutMs": 120000,
+  "summaryExtracted": true,
+  "summary": "STATUS: ok\n\nSUMMARY: The smoke-test file was successfully created at the requested path with the exact two required lines, validating that the write harness operates correctly without any other changes made.\n\nFiles changed:\n- [.agent/antigravity/smoke-test-ok.txt](file:///Users/emad/Projects/playground/Bazari/.agent/antigravity/smoke-test-ok.txt)",
+  "workerStatus": "ok",
+  "reportValid": true,
+  "errorMessage": null,
+  "stderrTail": ""
+}

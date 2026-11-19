@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "jobName": "smoke-test",
+  "runId": "2026-11-13T04-50-47-558Z_0de567",
+  "runDir": "/Users/emad/Projects/playground/Bazari/.agent/antigravity/smoke-test/2026-11-13T04-50-47-558Z_0de567",
+  "backend": "agy-cli",
+  "lifecycle": "completed",
+  "processAlive": false,
+  "pid": 20385,
+  "lastEventType": null,
+  "lastEventAt": null,
+  "watcherUpdatedAt": "2026-11-13T04:51:03.025824+00:00",
+  "current": null,
+  "currentAgeMs": null,
+  "quietMs": null,
+  "lastError": null,
+  "sessionId": null,
+  "exitCode": 0,
+  "signal": null,
+  "timedOut": false,
+  "timeoutMs": 120000
+}

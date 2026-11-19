@@ -24,6 +24,7 @@ go.work.sum
 # env files
 .env
 .env.android-bridge
+.env.navasan
 
 .idea/
 **/*_mocks_test.go

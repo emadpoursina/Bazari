@@ -114,6 +114,24 @@ export EXCHANGE_RATES_URL="http://navasan-translator:8088/latest.json"
 Keep `CURRENCY_CONFIG_BASE_CURRENCY=USD` (the default) unless you have a reason
 to change it.
 
+### Native run scripts
+
+The translator is a managed service of the native run scripts: `./run-native.sh`
+builds it, starts it **before** the backend (so the backend's startup rate sync
+finds it), points the backend's `EXCHANGE_RATES_URL` at it, and
+`./stop-native.sh` stops it with the rest of the stack.
+
+One-time setup — put your key in `.env.navasan` (gitignored):
+
+```bash
+cp .env.navasan.example .env.navasan   # fill in NAVASAN_API_KEY
+./run-native.sh                        # builds and starts everything
+```
+
+`./run-native.sh --no-navasan` falls back to the default S3 feed, and
+`./stop-native.sh --navasan-only` stops just the translator. Logs land in
+`.run/navasan.log`.
+
 ## Configuration
 
 | Variable | Default | Description |
